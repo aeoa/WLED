@@ -1,0 +1,5 @@
+{
+  "name": "LedWeste",
+  "build": { "libArchive": false },
+  "dependencies": {}
+}
