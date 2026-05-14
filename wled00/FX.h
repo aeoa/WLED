@@ -456,6 +456,7 @@ class Segment {
       bool    check2  : 1;        // checkmark 2
       bool    check3  : 1;        // checkmark 3
     };
+    bool      wrap_x;              // segment topology: X/1D edges are connected
     uint8_t   blendMode;          // segment blending modes: top, bottom, add, subtract, difference, average, multiply, divide, lighten, darken, screen, overlay, hardlight, softlight, dodge, burn, stencil
     char     *name;               // segment name
 
@@ -583,6 +584,7 @@ class Segment {
     , check1(false)
     , check2(false)
     , check3(false)
+    , wrap_x(false)
     , blendMode(0)
     , name(nullptr)
     , step(0)

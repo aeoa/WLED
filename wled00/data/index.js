@@ -783,6 +783,7 @@ function populateSegments(s)
 		let isMSeg = isM && staX<mw*mh; // 2D matrix segment
 		let rvXck = `<label class="check revchkl">Reverse ${isM?'':'direction'}<input type="checkbox" id="seg${i}rev" onchange="setRev(${i})" ${inst.rev?"checked":""}><span class="checkmark"></span></label>`;
 		let miXck = `<label class="check revchkl">Mirror<input type="checkbox" id="seg${i}mi" onchange="setMi(${i})" ${inst.mi?"checked":""}><span class="checkmark"></span></label>`;
+		let wrXck = `<label class="check revchkl">Wrap<input type="checkbox" id="seg${i}wX" onchange="setWrapX(${i})" ${inst.wX?"checked":""}><span class="checkmark"></span></label>`;
 		let rvYck = "", miYck ="";
 		let smpl = simplifiedUI ? 'hide' : '';
 		if (isMSeg) {
@@ -854,7 +855,7 @@ function populateSegments(s)
 					`<tr>`+
 						`<td><input class="segn" id="seg${i}s" type="number" min="0" max="${(isMSeg?mw:ledCount)-1}" value="${staX}" oninput="updateLen(${i})" onkeydown="segEnter(${i})"></td>`+
 						`<td><input class="segn" id="seg${i}e" type="number" min="0" max="${(isMSeg?mw:ledCount)}" value="${stoX-(cfg.comp.seglen?staX:0)}" oninput="updateLen(${i})" onkeydown="segEnter(${i})"></td>`+
-						`<td ${isMSeg?'style="text-align:revert;"':''}>${isMSeg?miXck+'<br>'+rvXck:''}<input class="segn ${isMSeg?'hide':''}" id="seg${i}of" type="number" value="${inst.of}" oninput="updateLen(${i})"></td>`+
+						`<td ${isMSeg?'style="text-align:revert;"':''}>${isMSeg?miXck+'<br>'+rvXck+'<br>'+wrXck:''}<input class="segn ${isMSeg?'hide':''}" id="seg${i}of" type="number" value="${inst.of}" oninput="updateLen(${i})"></td>`+
 					`</tr>`+
 					(isMSeg ? '<tr><td>Start Y</td><td>'+(cfg.comp.seglen?'Height':'Stop Y')+'</td><td></td></tr>'+
 					'<tr>'+
@@ -875,7 +876,7 @@ function populateSegments(s)
 					`</table>`+
 					`<div class="h bp" id="seg${i}len"></div>`+
 					blend +
-					(!isMSeg ? rvXck : '') +
+					(!isMSeg ? rvXck+'<br>'+wrXck : '') +
 					(isMSeg&&stoY-staY>1&&stoX-staX>1 ? map2D : '') +
 					(s.AudioReactive && s.AudioReactive.on ? "" : sndSim) +
 					`<label class="check revchkl" id="seg${i}lbtm">`+
@@ -2296,6 +2297,7 @@ function rptSeg(s)
 	var sel = gId(`seg${s}sel`).checked;
 	var pwr = gId(`seg${s}pwr`).classList.contains('act');
 	var obj = {"seg": {"id": s, "n": name, "start": start, "stop": (cfg.comp.seglen?start:0)+stop, "rev": rev, "mi": mi, "on": pwr, "bri": parseInt(gId(`seg${s}bri`).value), "sel": sel}};
+	if (gId(`seg${s}wX`)) obj.seg.wX = gId(`seg${s}wX`).checked;
 	if (gId(`seg${s}grp`)) {
 		var grp = parseInt(gId(`seg${s}grp`).value);
 		var spc = parseInt(gId(`seg${s}spc`).value);
@@ -2339,6 +2341,7 @@ function setSeg(s)
 		obj.seg.spc = spc;
 		obj.seg.of  = ofs;
 		if (isM && gId(`seg${s}tp`)) obj.seg.tp = gId(`seg${s}tp`).checked;
+		if (gId(`seg${s}wX`)) obj.seg.wX = gId(`seg${s}wX`).checked;
 	}
 	resetUtil(); // close add segment dialog just in case
 	requestJson(obj);
@@ -2408,6 +2411,13 @@ function setTp(s)
 {
 	var tp = gId(`seg${s}tp`).checked;
 	var obj = {"seg": {"id": s, "tp": tp}};
+	requestJson(obj);
+}
+
+function setWrapX(s)
+{
+	var wX = gId(`seg${s}wX`).checked;
+	var obj = {"seg": {"id": s, "wX": wX}};
 	requestJson(obj);
 }
 

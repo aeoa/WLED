@@ -34,6 +34,7 @@ namespace {
     bool     check1;
     bool     check2;
     bool     check3;
+    bool     wrap_x;
   } SegmentCopy;
 
   uint8_t differs(const Segment& b, const SegmentCopy& a) {
@@ -54,6 +55,7 @@ namespace {
     if (a.check1 != b.check1)       d |= SEG_DIFFERS_FX;
     if (a.check2 != b.check2)       d |= SEG_DIFFERS_FX;
     if (a.check3 != b.check3)       d |= SEG_DIFFERS_FX;
+    if (a.wrap_x != b.wrap_x)       d |= SEG_DIFFERS_OPT;
     if (a.startY != b.startY)       d |= SEG_DIFFERS_BOUNDS;
     if (a.stopY != b.stopY)         d |= SEG_DIFFERS_BOUNDS;
 
@@ -107,7 +109,8 @@ static bool deserializeSegment(JsonObject elem, byte it, byte presetId = 0)
     seg.custom3,
     seg.check1,
     seg.check2,
-    seg.check3
+    seg.check3,
+    seg.wrap_x
   };
 
   int start = elem["start"] | seg.start;
@@ -156,6 +159,7 @@ static bool deserializeSegment(JsonObject elem, byte it, byte presetId = 0)
   bool     selected  = getBoolVal(elem["sel"], seg.selected);
   bool     reverse   = getBoolVal(elem["rev"], seg.reverse);
   bool     mirror    = getBoolVal(elem["mi"] , seg.mirror);
+  bool     wrap_x    = getBoolVal(elem[F("wX")], seg.wrap_x);
   #ifndef WLED_DISABLE_2D
   bool     reverse_y = getBoolVal(elem["rY"]   , seg.reverse_y);
   bool     mirror_y  = getBoolVal(elem["mY"]   , seg.mirror_y);
@@ -276,6 +280,7 @@ static bool deserializeSegment(JsonObject elem, byte it, byte presetId = 0)
   seg.selected  = selected;
   seg.reverse   = reverse;
   seg.mirror    = mirror;
+  seg.wrap_x    = wrap_x;
   #ifndef WLED_DISABLE_2D
   seg.reverse_y = reverse_y;
   seg.mirror_y  = mirror_y;
@@ -618,6 +623,7 @@ static void serializeSegment(JsonObject& root, const Segment& seg, byte id, bool
   root["sel"] = seg.isSelected();
   root["rev"] = seg.reverse;
   root["mi"]  = seg.mirror;
+  root[F("wX")] = seg.wrap_x;
   #ifndef WLED_DISABLE_2D
   if (strip.isMatrix) {
     root["rY"] = seg.reverse_y;
