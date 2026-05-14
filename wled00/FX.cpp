@@ -8217,7 +8217,7 @@ void mode_particlefireworks(void) {
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
   numRockets = map(SEGMENT.speed, 0 , 255, 4, min(PartSys->numSources, (uint32_t)NUMBEROFSOURCES));
 
-  PartSys->setWrapX(SEGMENT.check1);
+  PartSys->setWrapX(SEGMENT.wrap_x || SEGMENT.check1);
   PartSys->setBounceY(SEGMENT.check2);
   PartSys->setGravity(map(SEGMENT.custom3, 0, 31, SEGMENT.check2 ? 1 : 0, 10)); // if bounded, set gravity to minimum of 1 or they will bounce at top
   PartSys->setMotionBlur(map(SEGMENT.custom2, 0, 255, 0, 245)); // anable motion blur
@@ -8423,7 +8423,7 @@ void mode_particlefire(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setWrapX(SEGMENT.check2);
+  PartSys->setWrapX(SEGMENT.wrap_x || SEGMENT.check2);
   PartSys->setMotionBlur(SEGMENT.check1 * 170); // anable/disable motion blur
   PartSys->setSmearBlur(!SEGMENT.check1 * 60);  // enable smear blur if motion blur is not enabled
 
@@ -8503,6 +8503,17 @@ void mode_particlefire(void) {
 }
 static const char _data_FX_MODE_PARTICLEFIRE[] PROGMEM = "PS Fire@Speed,Intensity,Flame Height,Wind,Spread,Smooth,Cylinder,Turbulence;;!;2;pal=35,sx=110,c1=110,c2=50,c3=31,o1=1";
 
+static uint16_t particleWrappedMaterialLife(uint16_t width, uint16_t height, uint8_t targetRowsDivisor, uint8_t particleDensityDivisor, uint16_t emitInterval, uint16_t emitCount, uint16_t minLife, uint16_t maxLife) {
+  const uint32_t targetRows = max((uint32_t)1, ((uint32_t)height + targetRowsDivisor - 1U) / targetRowsDivisor);
+  const uint32_t targetParticles = max((uint32_t)emitCount, ((uint32_t)width * targetRows) / particleDensityDivisor);
+  const uint32_t life = (targetParticles * emitInterval + emitCount - 1U) / emitCount;
+  return constrain(life, (uint32_t)minLife, (uint32_t)maxLife);
+}
+
+static uint8_t particleSizeDiameter(uint8_t size) {
+  return 1 + (((uint32_t)size * 9U) / 255U); // size 255 renders about 10 pixels wide
+}
+
 /*
   PS Ballpit: particles falling down, user can enable these three options: X-wraparound, side bounce, ground bounce
   sliders control falling speed, intensity (number of particles spawned), inter-particle collision hardness (0 means no particle collisions) and render saturation
@@ -8527,8 +8538,9 @@ void mode_particlepit(void) {
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
 
-  PartSys->setWrapX(SEGMENT.check1);
-  PartSys->setBounceX(SEGMENT.check2);
+  const bool wrapX = SEGMENT.wrap_x || SEGMENT.check1;
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX && SEGMENT.check2);
   PartSys->setBounceY(SEGMENT.check3);
   PartSys->setWallHardness(min(SEGMENT.custom2, (uint8_t)150)); // limit to 100 min (if collisions are disabled, still want bouncy)
   if (SEGMENT.custom2 > 0)
@@ -8537,11 +8549,24 @@ void mode_particlepit(void) {
     PartSys->enableParticleCollisions(false);
 
   uint32_t i;
-  if (SEGMENT.call % (128 - (SEGMENT.intensity >> 1)) == 0 && SEGMENT.intensity > 0) { // every nth frame emit particles, stop emitting if set to zero
+  const uint16_t emitInterval = 128 - (SEGMENT.intensity >> 1);
+
+  if (SEGMENT.call % emitInterval == 0 && SEGMENT.intensity > 0) { // every nth frame emit particles, stop emitting if set to zero
     for (i = 0; i < PartSys->usedParticles; i++) { // emit particles
       if (PartSys->particles[i].ttl == 0) { // find a dead particle
+        uint8_t particleSize = SEGMENT.custom1;
+        if (particleSize == 255) particleSize = hw_random16(255);
+
         // emit particle at random position over the top of the matrix (random16 is not random enough)
-        PartSys->particles[i].ttl = 1500 - (SEGMENT.speed << 2) + hw_random16(500); // if speed is higher, make them die sooner
+        uint16_t ttl = 1500 - (SEGMENT.speed << 2) + hw_random16(500); // if speed is higher, make them die sooner
+        if (wrapX && SEGMENT.check3) {
+          const uint8_t diameter = particleSizeDiameter(particleSize);
+          const uint8_t defaultDiameter = particleSizeDiameter(70);
+          const uint8_t densityDivisor = max((uint32_t)3, ((uint32_t)4 * diameter) / defaultDiameter);
+          const uint16_t targetTtl = particleWrappedMaterialLife(PartSys->maxXpixel + 1, PartSys->maxYpixel + 1, 4, densityDivisor, emitInterval, 1, 60, ttl) >> 1;
+          ttl = min(ttl, uint16_t(targetTtl + hw_random16(max((uint32_t)1, (uint32_t)targetTtl >> 2))));
+        }
+        PartSys->particles[i].ttl = ttl;
         PartSys->particles[i].x = hw_random(PartSys->maxX); //random(PartSys->maxX >> 1) + (PartSys->maxX >> 2);
         PartSys->particles[i].y = (PartSys->maxY << 1); // particles appear somewhere above the matrix, maximum is double the height
         PartSys->particles[i].vx = (int16_t)hw_random16(SEGMENT.speed >> 1) - (SEGMENT.speed >> 2); // side speed is +/-
@@ -8552,17 +8577,17 @@ void mode_particlepit(void) {
         // set particle size
         if (SEGMENT.custom1 == 255) {
           PartSys->perParticleSize = true;
-          PartSys->advPartProps[i].size = hw_random16(SEGMENT.custom1); // set each particle to random size
+          PartSys->advPartProps[i].size = particleSize; // set each particle to random size
         } else {
           PartSys->setParticleSize(SEGMENT.custom1); // set global size
-          PartSys->advPartProps[i].size = SEGMENT.custom1; // also set individual size for consistency
+          PartSys->advPartProps[i].size = particleSize; // also set individual size for consistency
         }
         break; // emit only one particle per round
       }
     }
   }
 
-  uint32_t frictioncoefficient = 1 + SEGMENT.check1; //need more friction if wrapX is set, see below note
+  uint32_t frictioncoefficient = 1 + wrapX; // need more friction if wrapX is set, see below note
   if (SEGMENT.speed < 50) // for low speeds, apply more friction
     frictioncoefficient = 50 - SEGMENT.speed;
 
@@ -8610,11 +8635,24 @@ void mode_particlewaterfall(void) {
 
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setWrapX(SEGMENT.check1);   // cylinder
-  PartSys->setBounceX(SEGMENT.check2); // walls
+  const bool wrapX = SEGMENT.wrap_x || SEGMENT.check1;
+  PartSys->setWrapX(wrapX);            // cylinder
+  PartSys->setBounceX(!wrapX && SEGMENT.check2); // walls
   PartSys->setBounceY(SEGMENT.check3); // ground
   PartSys->setWallHardness(SEGMENT.custom2);
   numSprays = min((int32_t)PartSys->numSources, max(PartSys->maxXpixel / 6, (int32_t)2)); // number of sprays depends on segment width
+  const uint16_t emitInterval = 12 - (SEGMENT.intensity >> 5);
+  #ifdef ESP8266
+  uint16_t minLife = 100;
+  uint16_t maxLife = 250;
+  #else
+  uint16_t minLife = 150;
+  uint16_t maxLife = 400;
+  #endif
+  if (wrapX && SEGMENT.check3) {
+    maxLife = min(uint16_t(maxLife), uint16_t(particleWrappedMaterialLife(PartSys->maxXpixel + 1, PartSys->maxYpixel + 1, 3, 2, emitInterval, numSprays, 60, maxLife) << 1));
+    minLife = max(uint16_t(30), uint16_t(maxLife >> 1));
+  }
   if (SEGMENT.custom2 > 0) // collisions enabled
     PartSys->enableParticleCollisions(true, SEGMENT.custom2); // enable collisions and set particle collision hardness
   else {
@@ -8626,8 +8664,10 @@ void mode_particlewaterfall(void) {
       PartSys->sources[i].source.hue += 1 + hw_random16(SEGMENT.custom1>>1); // change hue of spray source
   }
 
-  if (SEGMENT.call % (12 - (SEGMENT.intensity >> 5)) == 0 && SEGMENT.intensity > 0) { // every nth frame, emit particles, do not emit if intensity is zero
+  if (SEGMENT.call % emitInterval == 0 && SEGMENT.intensity > 0) { // every nth frame, emit particles, do not emit if intensity is zero
     for (i = 0; i < numSprays; i++) {
+      PartSys->sources[i].minLife = minLife;
+      PartSys->sources[i].maxLife = maxLife;
       PartSys->sources[i].vy = -SEGMENT.speed >> 3; // emitting speed, down
       //PartSys->sources[i].source.x = map(SEGMENT.custom3, 0, 31, 0, (PartSys->maxXpixel - numSprays * 2) * PS_P_RADIUS) + i * PS_P_RADIUS * 2; // emitter position
       PartSys->sources[i].source.x = map(SEGMENT.custom3, 0, 31, 0, (PartSys->maxXpixel - numSprays) * PS_P_RADIUS) + i * PS_P_RADIUS * 2; // emitter position
@@ -8755,8 +8795,9 @@ void mode_particleperlin(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setWrapX(SEGMENT.check1);
-  PartSys->setBounceX(!SEGMENT.check1);
+  const bool wrapX = SEGMENT.wrap_x || SEGMENT.check1;
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX);
   PartSys->setWallHardness(SEGMENT.custom1); // wall hardness
   PartSys->enableParticleCollisions(SEGMENT.check3, SEGMENT.custom1); // enable collisions and set particle collision hardness
   PartSys->setUsedParticles(map(SEGMENT.intensity, 0, 255, 25, 128)); // min is 10%, max is 50%
@@ -8823,8 +8864,10 @@ void mode_particleimpact(void) {
 
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setWrapX(SEGMENT.check1);
-  PartSys->setBounceX(SEGMENT.check2);
+  const bool wrapX = SEGMENT.wrap_x || SEGMENT.check1;
+  meteorsettings.wrapX = wrapX;
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX && SEGMENT.check2);
   PartSys->setMotionBlur(SEGMENT.custom3<<3);
   uint8_t hardness = map(SEGMENT.custom2, 0, 255, PS_P_MINSURFACEHARDNESS - 2, 255);
   PartSys->setWallHardness(hardness);
@@ -9018,8 +9061,9 @@ void mode_particlespray(void) {
 
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setBounceX(!SEGMENT.check2);
-  PartSys->setWrapX(SEGMENT.check2);
+  const bool wrapX = SEGMENT.wrap_x || SEGMENT.check2;
+  PartSys->setBounceX(!wrapX);
+  PartSys->setWrapX(wrapX);
   PartSys->setWallHardness(hardness);
   PartSys->setGravity(8 * SEGMENT.check1); // enable gravity if checked (8 is default strength)
   //numSprays = min(PartSys->numSources, (uint8_t)1); // number of sprays
@@ -9085,8 +9129,9 @@ void mode_particleGEQ(void) {
   uint32_t i;
   // set particle system properties
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setWrapX(SEGMENT.check1);
-  PartSys->setBounceX(SEGMENT.check2);
+  const bool wrapX = SEGMENT.wrap_x || SEGMENT.check1;
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX && SEGMENT.check2);
   PartSys->setBounceY(SEGMENT.check3);
   //PartSys->enableParticleCollisions(false);
   PartSys->setWallHardness(SEGMENT.custom2);
@@ -9310,6 +9355,8 @@ void mode_particleblobs(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  PartSys->setWrapX(SEGMENT.wrap_x);
+  PartSys->setBounceX(!SEGMENT.wrap_x);
   PartSys->setUsedParticles(map(SEGMENT.intensity, 0, 255, 25, 128)); // minimum 10%, maximum 50% of available particles (note: PS ensures at least 1)
   PartSys->enableParticleCollisions(SEGMENT.check2);
 
@@ -10193,8 +10240,9 @@ void mode_particleBalance(void) {
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
   PartSys->setMotionBlur(SEGMENT.custom2); // enable motion blur
-  PartSys->setBounce(!SEGMENT.check2);
-  PartSys->setWrap(SEGMENT.check2);
+  const bool wrap = (!SEGMENT.is2D() && SEGMENT.wrap_x) || SEGMENT.check2;
+  PartSys->setBounce(!wrap);
+  PartSys->setWrap(wrap);
   uint8_t hardness = SEGMENT.custom1 > 0 ? map(SEGMENT.custom1, 0, 255, 50, 250) : 200; // set hardness,  make the walls hard if collisions are disabled
   PartSys->enableParticleCollisions(SEGMENT.custom1, hardness); // enable collisions if custom1 > 0
   PartSys->setWallHardness(200);
