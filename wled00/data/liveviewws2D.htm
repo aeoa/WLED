@@ -8,10 +8,33 @@
 	<style>
 	body {
 		margin: 0;
+		overflow: hidden;
+	}
+	#tools {
+		position: fixed;
+		top: 8px;
+		right: 8px;
+		z-index: 1;
+		padding: 6px 8px;
+		border-radius: 6px;
+		background: rgba(32,32,32,.82);
+		color: #ddd;
+		font: 12px system-ui, sans-serif;
+	}
+	#tools input[type="number"] {
+		width: 3em;
+		margin-left: 4px;
+		background: #111;
+		color: #ddd;
+		border: 1px solid #555;
 	}
 	</style>
 </head>
 <body>
+	<div id="tools">
+		<label><input id="wrapX" type="checkbox"> Wrap X</label>
+		<label>Cols<input id="wrapCols" type="number" min="1" max="16" value="2"></label>
+	</div>
 	<canvas id="canv"></canvas>
 	<script>
 		// load common.js with retry on error
@@ -23,16 +46,64 @@
 			document.head.appendChild(l);
 		})();
 		var c = document.getElementById('canv');
-		var leds = "";
+		var wrapX = localStorage.getItem('wledPeekWrapX') === 'true';
+		var wrapCols = Math.max(1, Math.min(16, parseInt(localStorage.getItem('wledPeekWrapCols') || '2') || 2));
 		var throttled = false;
+		var ctx;
 		function setCanvas() {
 			c.width  = window.innerWidth * 0.98; //remove scroll bars
 			c.height = window.innerHeight * 0.98; //remove scroll bars
 		}
+		function setWrapControls() {
+			const wX = document.getElementById('wrapX');
+			const wC = document.getElementById('wrapCols');
+			wX.checked = wrapX;
+			wC.value = wrapCols;
+			wC.disabled = !wrapX;
+			wX.addEventListener('change', () => {
+				wrapX = wX.checked;
+				wC.disabled = !wrapX;
+				localStorage.setItem('wledPeekWrapX', wrapX);
+			});
+			wC.addEventListener('change', () => {
+				wrapCols = Math.max(1, Math.min(16, parseInt(wC.value) || 2));
+				wC.value = wrapCols;
+				localStorage.setItem('wledPeekWrapCols', wrapCols);
+			});
+		}
+		function drawFrame(leds) {
+			if (!ctx) return;
+			const mW = leds[2]; // matrix width
+			const mH = leds[3]; // matrix height
+			const extra = wrapX ? Math.min(wrapCols, mW) : 0;
+			const viewW = mW + extra * 2;
+			const pPL = Math.min(c.width / viewW, c.height / mH); // pixels per LED (width of circle)
+			const lOf = Math.floor((c.width - pPL * viewW) / 2); //left offset (to center matrix)
+			ctx.clearRect(0, 0, c.width, c.height);
+			for (let y=0.5; y<mH; y++) for (let x=-extra+0.5; x<mW+extra; x++) {
+				const srcX = (Math.floor(x) + mW) % mW;
+				const i = 4 + ((Math.floor(y) * mW + srcX) * 3);
+				ctx.fillStyle = `rgb(${leds[i]},${leds[i+1]},${leds[i+2]})`;
+				ctx.beginPath();
+				ctx.arc((x + extra) * pPL + lOf, y * pPL, pPL * 0.4, 0, 2 * Math.PI);
+				ctx.fill();
+			}
+			if (extra) {
+				ctx.strokeStyle = 'rgba(255,255,255,.5)';
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(lOf + extra * pPL, 0);
+				ctx.lineTo(lOf + extra * pPL, mH * pPL);
+				ctx.moveTo(lOf + (extra + mW) * pPL, 0);
+				ctx.lineTo(lOf + (extra + mW) * pPL, mH * pPL);
+				ctx.stroke();
+			}
+		}
 		function S() { // Startup function (onload)
 			setCanvas();
+			setWrapControls();
 			// Check for canvas support
-			var ctx = c.getContext('2d');
+			ctx = c.getContext('2d');
 			if (ctx) { // Access the rendering context
 				ws = connectWs(ws => ws.send('{"lv":true}')); // use parent WS or open new
 				ws.addEventListener('message',(e)=>{
@@ -40,18 +111,7 @@
 						if (toString.call(e.data) === '[object ArrayBuffer]') {
 							let leds = new Uint8Array(e.data);
 							if (leds[0] != 76 || leds[1] != 2 || !ctx) return; //'L', set in ws.cpp
-							let mW = leds[2]; // matrix width
-							let mH = leds[3]; // matrix height
-							let pPL = Math.min(c.width / mW, c.height / mH); // pixels per LED (width of circle)
-							let lOf = Math.floor((c.width - pPL*mW)/2); //left offset (to center matrix)
-							var i = 4;
-							for (y=0.5;y<mH;y++) for (x=0.5; x<mW; x++) {
-								ctx.fillStyle = `rgb(${leds[i]},${leds[i+1]},${leds[i+2]})`;
-								ctx.beginPath();
-								ctx.arc(x*pPL+lOf, y*pPL, pPL*0.4, 0, 2 * Math.PI);
-								ctx.fill();
-								i+=3;
-							}
+							drawFrame(leds);
 						}
 					} catch (err) {
 						console.error("Peek WS error:",err);
