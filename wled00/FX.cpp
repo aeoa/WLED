@@ -8384,6 +8384,9 @@ void mode_particlevolcano(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   numSprays = min(PartSys->numSources, (uint32_t)NUMBEROFSOURCES); // number of volcanoes
+  const bool wrapX = SEGMENT.wrap_x;
+  volcanosettings.wrapX = wrapX;
+  volcanosettings.bounceX = !wrapX;
 
   // change source emitting color from time to time, emit one particle per spray
   if (SEGMENT.call % (11 - (SEGMENT.intensity / 25)) == 0) { // every nth frame, cycle color and emit particles (and update the sources)
@@ -8404,7 +8407,8 @@ void mode_particlevolcano(void) {
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
   PartSys->setColorByAge(SEGMENT.check1);
-  PartSys->setBounceX(SEGMENT.check2);
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX && SEGMENT.check2);
   PartSys->setWallHardness(SEGMENT.custom2);
 
   if (SEGMENT.check3) // collisions enabled
@@ -8723,6 +8727,9 @@ void mode_particlebox(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  const bool wrapX = SEGMENT.wrap_x;
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX);
   PartSys->setWallHardness(min(SEGMENT.custom2, (uint8_t)200)); // wall hardness is 200 or more
   PartSys->enableParticleCollisions(true, max(2, (int)SEGMENT.custom2)); // enable collisions and set particle collision hardness
   int maxParticleSize = min(((SEGMENT.vWidth() * SEGMENT.vHeight()) >> 2), 255U); // max particle size based on matrix size
@@ -8776,7 +8783,24 @@ void mode_particlebox(void) {
         ygravity = -ygravity;
     }
 
-    PartSys->applyForce(xgravity, ygravity);
+    if (wrapX && xgravity) {
+      const int32_t circumference = PartSys->maxX + 1;
+      const int32_t halfCircumference = circumference >> 1;
+      const int32_t lowMeridian = xgravity > 0 ? (circumference * 3) >> 2 : circumference >> 2;
+      const int32_t gravity = abs(xgravity);
+      const int8_t yforce = constrain(ygravity, -127, 127);
+      for (i = 0; i < PartSys->usedParticles; i++) {
+        if (PartSys->particles[i].ttl == 0) continue;
+        int32_t dx = PartSys->particles[i].x - lowMeridian;
+        if (dx > halfCircumference)       dx -= circumference;
+        else if (dx < -halfCircumference) dx += circumference;
+        const int32_t angle = (dx * 65536LL) / circumference;
+        const int8_t xforce = constrain(-((gravity * sin16_t(uint16_t(angle))) / 32767), -127, 127);
+        PartSys->applyForce(i, xforce, yforce);
+      }
+    } else {
+      PartSys->applyForce(xgravity, ygravity);
+    }
   }
 
   if ((SEGMENT.call & 0x0F) == 0) // every 16th frame
