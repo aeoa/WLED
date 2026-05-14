@@ -6129,20 +6129,27 @@ void mode_2Dcrazybees(void) {
 
   const int cols = SEG_W;
   const int rows = SEG_H;
+  const bool wrapX = SEGMENT.wrap_x;
 
   byte n = MIN(MAX_BEES, (rows * cols) / 256 + 1);
 
   typedef struct Bee {
     uint8_t posX, posY, aimX, aimY, hue;
-    int8_t deltaX, deltaY, signX, signY, error;
-    void aimed(uint16_t w, uint16_t h) {
+    int16_t deltaX, deltaY, error;
+    int8_t signX, signY;
+    void aimed(uint16_t w, uint16_t h, bool wrapX) {
       //prng.setSeed(millis());
       aimX   = prng.random8(0, w);
       aimY   = prng.random8(0, h);
       hue    = prng.random8();
-      deltaX = abs(aimX - posX);
+      int16_t dx = int16_t(aimX) - int16_t(posX);
+      if (wrapX) {
+        if (dx > int16_t(w >> 1))       dx -= w;
+        else if (dx < -int16_t(w >> 1)) dx += w;
+      }
+      deltaX = abs(dx);
       deltaY = abs(aimY - posY);
-      signX  = posX < aimX ? 1 : -1;
+      signX  = dx >= 0 ? 1 : -1;
       signY  = posY < aimY ? 1 : -1;
       error  = deltaX - deltaY;
     };
@@ -6156,7 +6163,7 @@ void mode_2Dcrazybees(void) {
     for (size_t i = 0; i < n; i++) {
       bee[i].posX = prng.random8(0, cols);
       bee[i].posY = prng.random8(0, rows);
-      bee[i].aimed(cols, rows);
+      bee[i].aimed(cols, rows, wrapX);
     }
   }
 
@@ -6175,14 +6182,21 @@ void mode_2Dcrazybees(void) {
         int error2 = bee[i].error * 2;
         if (error2 > -bee[i].deltaY) {
           bee[i].error -= bee[i].deltaY;
-          bee[i].posX += bee[i].signX;
+          if (wrapX) {
+            int16_t posX = int16_t(bee[i].posX) + bee[i].signX;
+            if (posX < 0) posX += cols;
+            else if (posX >= cols) posX -= cols;
+            bee[i].posX = posX;
+          } else {
+            bee[i].posX += bee[i].signX;
+          }
         }
         if (error2 < bee[i].deltaX) {
           bee[i].error += bee[i].deltaX;
           bee[i].posY += bee[i].signY;
         }
       } else {
-        bee[i].aimed(cols, rows);
+        bee[i].aimed(cols, rows, wrapX);
       }
     }
   }
@@ -6288,6 +6302,7 @@ void mode_2Dfloatingblobs(void) {
 
   const int cols = SEG_W;
   const int rows = SEG_H;
+  const bool wrapX = SEGMENT.wrap_x;
 
   typedef struct Blob {
     float x[MAX_BLOBS], y[MAX_BLOBS];
@@ -6342,18 +6357,22 @@ void mode_2Dfloatingblobs(void) {
     if (blob->r[i] > 1.f) SEGMENT.fillCircle(roundf(blob->x[i]), roundf(blob->y[i]), roundf(blob->r[i]), c);
     else                  SEGMENT.setPixelColorXY((int)roundf(blob->x[i]), (int)roundf(blob->y[i]), c);
     // move x
-    if (blob->x[i] + blob->r[i] >= cols - 1) blob->x[i] += (blob->sX[i] * ((cols - 1 - blob->x[i]) / blob->r[i] + 0.005f));
-    else if (blob->x[i] - blob->r[i] <= 0)   blob->x[i] += (blob->sX[i] * (blob->x[i] / blob->r[i] + 0.005f));
-    else                                     blob->x[i] += blob->sX[i];
+    if (wrapX) {
+      blob->x[i] += blob->sX[i];
+      while (blob->x[i] < 0.0f) blob->x[i] += cols;
+      while (blob->x[i] >= cols) blob->x[i] -= cols;
+    } else if (blob->x[i] + blob->r[i] >= cols - 1) blob->x[i] += (blob->sX[i] * ((cols - 1 - blob->x[i]) / blob->r[i] + 0.005f));
+    else if (blob->x[i] - blob->r[i] <= 0)          blob->x[i] += (blob->sX[i] * (blob->x[i] / blob->r[i] + 0.005f));
+    else                                            blob->x[i] += blob->sX[i];
     // move y
     if (blob->y[i] + blob->r[i] >= rows - 1) blob->y[i] += (blob->sY[i] * ((rows - 1 - blob->y[i]) / blob->r[i] + 0.005f));
     else if (blob->y[i] - blob->r[i] <= 0)   blob->y[i] += (blob->sY[i] * (blob->y[i] / blob->r[i] + 0.005f));
     else                                     blob->y[i] += blob->sY[i];
     // bounce x
-    if (blob->x[i] < 0.01f) {
+    if (!wrapX && blob->x[i] < 0.01f) {
       blob->sX[i] = (float)hw_random8(3, cols) / (256 - SEGMENT.speed);
       blob->x[i]  = 0.01f;
-    } else if (blob->x[i] > (float)cols - 1.01f) {
+    } else if (!wrapX && blob->x[i] > (float)cols - 1.01f) {
       blob->sX[i] = (float)hw_random8(3, cols) / (256 - SEGMENT.speed);
       blob->sX[i] = -blob->sX[i];
       blob->x[i]  = (float)cols - 1.01f;
