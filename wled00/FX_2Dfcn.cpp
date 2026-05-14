@@ -188,7 +188,13 @@ bool Segment::isPixelXYClipped(int x, int y) const {
 void IRAM_ATTR_YN Segment::setPixelColorXY(int x, int y, uint32_t col) const
 {
   if (!isActive()) return; // not active
-  if ((unsigned)x >= vWidth() || (unsigned)y >= vHeight()) return;  // if pixel would fall out of virtual segment just exit
+  const int width = vWidth();
+  if (width <= 0) return;
+  if (wrap_x) {
+    x %= width;
+    if (x < 0) x += width;
+  }
+  if ((unsigned)x >= (unsigned)width || (unsigned)y >= vHeight()) return;  // if pixel would fall out of virtual segment just exit
   setPixelColorXYRaw(x, y, col);
 }
 
@@ -238,7 +244,13 @@ void Segment::setPixelColorXY(float x, float y, uint32_t col, bool aa) const
 // returns RGBW values of pixel
 uint32_t IRAM_ATTR_YN Segment::getPixelColorXY(int x, int y) const {
   if (!isActive()) return 0; // not active
-  if ((unsigned)x >= vWidth() || (unsigned)y >= vHeight()) return 0;  // if pixel would fall out of virtual segment just exit
+  const int width = vWidth();
+  if (width <= 0) return 0;
+  if (wrap_x) {
+    x %= width;
+    if (x < 0) x += width;
+  }
+  if ((unsigned)x >= (unsigned)width || (unsigned)y >= vHeight()) return 0;  // if pixel would fall out of virtual segment just exit
   return getPixelColorXYRaw(x,y);
 }
 
@@ -247,6 +259,7 @@ void Segment::blur2D(uint8_t blur_x, uint8_t blur_y, bool smear) const {
   if (!isActive()) return; // not active
   const unsigned cols = vWidth();
   const unsigned rows = vHeight();
+  if (!cols || !rows) return;
   const auto XY = [&](unsigned x, unsigned y){ return x + y*cols; };
   if (blur_x) {
     const uint8_t keepx = smear ? 255 : 255 - blur_x;
@@ -255,6 +268,7 @@ void Segment::blur2D(uint8_t blur_x, uint8_t blur_y, bool smear) const {
       // handle first pixel in row to avoid conditional in loop (faster)
       uint32_t cur = getPixelColorRaw(XY(0, row));
       uint32_t carryover = fast_color_scale(cur, seepx);
+      uint32_t firstPart = carryover;
       setPixelColorRaw(XY(0, row), fast_color_scale(cur, keepx));
       for (unsigned x = 1; x < cols; x++) {
          cur = getPixelColorRaw(XY(x, row));
@@ -264,6 +278,10 @@ void Segment::blur2D(uint8_t blur_x, uint8_t blur_y, bool smear) const {
         setPixelColorRaw(XY(x - 1, row), color_add(getPixelColorRaw(XY(x-1, row)), part)); // previous pixel
         setPixelColorRaw(XY(x, row), cur); // current pixel
         carryover = part;
+      }
+      if (wrap_x) {
+        setPixelColorRaw(XY(cols - 1, row), color_add(getPixelColorRaw(XY(cols - 1, row)), firstPart));
+        setPixelColorRaw(XY(0, row),        color_add(getPixelColorRaw(XY(0, row)),        carryover));
       }
     }
   }
@@ -419,18 +437,17 @@ void Segment::moveY(int delta, bool wrap) const {
 // move() - move all pixels in desired direction delta number of pixels
 // @param dir direction: 0=left, 1=left-up, 2=up, 3=right-up, 4=right, 5=right-down, 6=down, 7=left-down
 // @param delta number of pixels to move
-// @param wrap around
-void Segment::move(unsigned dir, unsigned delta, bool wrap) const {
+void Segment::move(unsigned dir, unsigned delta) const {
   if (delta==0) return;
   switch (dir) {
-    case 0: moveX( delta, wrap);                      break;
-    case 1: moveX( delta, wrap); moveY( delta, wrap); break;
-    case 2:                      moveY( delta, wrap); break;
-    case 3: moveX(-delta, wrap); moveY( delta, wrap); break;
-    case 4: moveX(-delta, wrap);                      break;
-    case 5: moveX(-delta, wrap); moveY(-delta, wrap); break;
-    case 6:                      moveY(-delta, wrap); break;
-    case 7: moveX( delta, wrap); moveY(-delta, wrap); break;
+    case 0: moveX( delta, wrap_x);                break;
+    case 1: moveX( delta, wrap_x); moveY( delta); break;
+    case 2: moveY( delta);                        break;
+    case 3: moveX(-delta, wrap_x); moveY( delta); break;
+    case 4: moveX(-delta, wrap_x);                break;
+    case 5: moveX(-delta, wrap_x); moveY(-delta); break;
+    case 6: moveY(-delta);                        break;
+    case 7: moveX( delta, wrap_x); moveY(-delta); break;
   }
 }
 
@@ -492,17 +509,17 @@ void Segment::drawCircle(uint16_t cx, uint16_t cy, uint8_t radius, uint32_t col,
 // by stepko, taken from https://editor.soulmatelights.com/gallery/573-blobs
 void Segment::fillCircle(uint16_t cx, uint16_t cy, uint8_t radius, uint32_t col, bool soft) const {
   if (!isActive() || radius == 0) return; // not active
-  const int vW = vWidth();   // segment width in logical pixels (can be 0 if segment is inactive)
   const int vH = vHeight();  // segment height in logical pixels (is always >= 1)
   // draw soft bounding circle
   if (soft) drawCircle(cx, cy, radius, col, soft);
   // fill it
   for (int y = -radius; y <= radius; y++) {
     for (int x = -radius; x <= radius; x++) {
+      const int px = int(cx) + x;
+      const int py = int(cy) + y;
       if (x * x + y * y <= radius * radius &&
-          int(cx)+x >= 0 && int(cy)+y >= 0 &&
-          int(cx)+x < vW && int(cy)+y < vH)
-        setPixelColorXY(cx + x, cy + y, col);
+          py >= 0 && py < vH)
+        setPixelColorXY(px, py, col);
     }
   }
 }

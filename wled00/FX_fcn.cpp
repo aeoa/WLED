@@ -726,11 +726,24 @@ bool Segment::isPixelClipped(int i) const {
 
 void WLED_O2_ATTR Segment::setPixelColor(int i, uint32_t col) const
 {
-  if (!isActive() || i < 0) return; // not active or invalid index
+  if (!isActive()) return; // not active
 #ifndef WLED_DISABLE_2D
   int vStrip = 0;
 #endif
   const int vL = vLength();
+  if (vL <= 0) return;
+
+#ifndef WLED_DISABLE_2D
+  const bool hasVStrip = i > 0xFFFF; // upper 16 bits encode a virtual strip for some 2D mappings
+  const bool wrap1D = wrap_x && !is2D() && !hasVStrip;
+#else
+  const bool wrap1D = wrap_x;
+#endif
+  if (wrap1D) {
+    i %= vL;
+    if (i < 0) i += vL;
+  } else if (i < 0) return; // invalid index
+
   // if the 1D effect is using virtual strips "i" will have virtual strip id stored in upper 16 bits
   // in such case "i" will be > virtualLength()
   if (i >= vL) {
@@ -939,13 +952,26 @@ void Segment::setPixelColor(float i, uint32_t col, bool aa) const
 
 uint32_t WLED_O2_ATTR Segment::getPixelColor(int i) const
 {
-  if (!isActive() || i < 0) return 0; // not active or invalid index
+  if (!isActive()) return 0; // not active
+  const int vL = vLength();
+  if (vL <= 0) return 0;
 
 #ifndef WLED_DISABLE_2D
+  const bool hasVStrip = i > 0xFFFF; // upper 16 bits encode a virtual strip for some 2D mappings
+  const bool wrap1D = wrap_x && !is2D() && !hasVStrip;
+  if (wrap1D) {
+    i %= vL;
+    if (i < 0) i += vL;
+  } else if (i < 0) return 0; // invalid index
   int vStrip = i>>16; // virtual strips are only relevant in Bar expansion mode
   i &= 0xFFFF;
+#else
+  if (wrap_x) {
+    i %= vL;
+    if (i < 0) i += vL;
+  } else if (i < 0) return 0; // invalid index
 #endif
-  if (i >= (int)vLength()) return 0;
+  if (i >= vL) return 0;
 
 #ifndef WLED_DISABLE_2D
   if (is2D()) {
@@ -1096,9 +1122,11 @@ void Segment::blur(uint8_t blur_amount, bool smear) const {
   uint8_t keep = smear ? 255 : 255 - blur_amount;
   uint8_t seep = blur_amount >> 1;
   unsigned vlength = vLength();
+  if (!vlength) return;
   // handle first pixel to avoid conditional in loop (faster)
   uint32_t cur = getPixelColorRaw(0);
   uint32_t carryover = fast_color_scale(cur, seep);
+  uint32_t firstPart = carryover;
   setPixelColorRaw(0, fast_color_scale(cur, keep));
   for (unsigned i = 1; i < vlength; i++) {
     cur = getPixelColorRaw(i);
@@ -1108,6 +1136,10 @@ void Segment::blur(uint8_t blur_amount, bool smear) const {
     setPixelColorRaw(i - 1, color_add(getPixelColorRaw(i - 1), part)); // previous pixel
     setPixelColorRaw(i, cur); // current pixel
     carryover = part;
+  }
+  if (wrap_x) {
+    setPixelColorRaw(vlength - 1, color_add(getPixelColorRaw(vlength - 1), firstPart));
+    setPixelColorRaw(0,           color_add(getPixelColorRaw(0),           carryover));
   }
 }
 

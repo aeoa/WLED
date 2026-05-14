@@ -1337,7 +1337,7 @@ void mode_rain() {
     if (SEGMENT.is2D()) {
       //uint32_t ctemp[width];
       //for (int i = 0; i<width; i++) ctemp[i] = SEGMENT.getPixelColorXY(i, height-1);
-      SEGMENT.move(6, 1, true);  // move all pixels down
+      SEGMENT.moveY(-1, true);  // move all pixels down
       //for (int i = 0; i<width; i++) SEGMENT.setPixelColorXY(i, 0, ctemp[i]); // wrap around
       SEGENV.aux0 = (SEGENV.aux0 % width) + (SEGENV.aux0 / width + 1) * width;
       SEGENV.aux1 = (SEGENV.aux1 % width) + (SEGENV.aux1 / width + 1) * width;
