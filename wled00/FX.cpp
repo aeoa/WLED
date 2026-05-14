@@ -6237,8 +6237,8 @@ void mode_2Dghostrider(void) {
     int16_t  gPosY;
     uint16_t gAngle;
     int8_t   angleSpeed;
-    uint16_t lightersPosX[LIGHTERS_AM];
-    uint16_t lightersPosY[LIGHTERS_AM];
+    int16_t  lightersPosX[LIGHTERS_AM];
+    int16_t  lightersPosY[LIGHTERS_AM];
     uint16_t Angle[LIGHTERS_AM];
     uint16_t time[LIGHTERS_AM];
     bool     reg[LIGHTERS_AM];
@@ -6249,6 +6249,13 @@ void mode_2Dghostrider(void) {
   lighter_t *lighter = reinterpret_cast<lighter_t*>(SEGENV.data);
 
   const size_t maxLighters = min(cols + rows, LIGHTERS_AM);
+  const bool wrapX = SEGMENT.wrap_x;
+  const int16_t maxX = (cols - 1) * 10;
+  const int16_t maxY = (rows - 1) * 10;
+  auto wrapPos = [](int16_t &pos, int16_t max) {
+    if (pos < 0)        pos = max;
+    else if (pos > max) pos = 0;
+  };
 
   if (SEGENV.aux0 != cols || SEGENV.aux1 != rows) {
     SEGENV.aux0 = cols;
@@ -6277,17 +6284,20 @@ void mode_2Dghostrider(void) {
     lighter->gPosX += lighter->Vspeed * sin_t(radians(lighter->gAngle));
     lighter->gPosY += lighter->Vspeed * cos_t(radians(lighter->gAngle));
     lighter->gAngle += lighter->angleSpeed;
-    if (lighter->gPosX < 0)               lighter->gPosX = (cols - 1) * 10;
-    if (lighter->gPosX > (cols - 1) * 10) lighter->gPosX = 0;
-    if (lighter->gPosY < 0)               lighter->gPosY = (rows - 1) * 10;
-    if (lighter->gPosY > (rows - 1) * 10) lighter->gPosY = 0;
+    if (wrapX) {
+      wrapPos(lighter->gPosX, maxX);
+    } else if (lighter->gPosX < 0 || lighter->gPosX > maxX) {
+      lighter->gPosX = constrain(lighter->gPosX, 0, maxX);
+      lighter->gAngle = (360 - (lighter->gAngle % 360)) % 360;
+    }
+    if (lighter->gPosY < 0)    lighter->gPosY = maxY;
+    if (lighter->gPosY > maxY) lighter->gPosY = 0;
     for (size_t i = 0; i < maxLighters; i++) {
       lighter->time[i] += hw_random8(5, 20);
       if (lighter->time[i] >= 255 ||
-        (lighter->lightersPosX[i] <= 0) ||
-          (lighter->lightersPosX[i] >= (cols - 1) * 10) ||
+          (!wrapX && (lighter->lightersPosX[i] <= 0 || lighter->lightersPosX[i] >= maxX)) ||
           (lighter->lightersPosY[i] <= 0) ||
-          (lighter->lightersPosY[i] >= (rows - 1) * 10)) {
+          (lighter->lightersPosY[i] >= maxY)) {
         lighter->reg[i] = true;
       }
       if (lighter->reg[i]) {
@@ -6299,6 +6309,12 @@ void mode_2Dghostrider(void) {
       } else {
         lighter->lightersPosX[i] += -7 * sin_t(radians(lighter->Angle[i]));
         lighter->lightersPosY[i] += -7 * cos_t(radians(lighter->Angle[i]));
+        if (wrapX) wrapPos(lighter->lightersPosX[i], maxX);
+        if ((!wrapX && (lighter->lightersPosX[i] < 0 || lighter->lightersPosX[i] > maxX)) ||
+            (lighter->lightersPosY[i] < 0 || lighter->lightersPosY[i] > maxY)) {
+          lighter->reg[i] = true;
+          continue;
+        }
       }
       SEGMENT.wu_pixel(lighter->lightersPosX[i] * 256 / 10, lighter->lightersPosY[i] * 256 / 10, ColorFromPalette(SEGPALETTE, (256 - lighter->time[i])));
     }
@@ -9258,7 +9274,11 @@ static const char _data_FX_MODE_PARTICLECIRCULARGEQ[] PROGMEM = "PS GEQ Nova@Spe
 void mode_particleghostrider(void) {
   ParticleSystem2D *PartSys = nullptr;
   PSsettings2D ghostsettings;
-  ghostsettings.asByte = 0b0000011; //enable wrapX and wrapY
+  const bool wrapX = SEGMENT.wrap_x;
+  ghostsettings.asByte = 0;
+  ghostsettings.wrapX = wrapX;
+  ghostsettings.wrapY = true;
+  ghostsettings.bounceX = !wrapX;
 
   if (SEGMENT.call == 0) { // initialization
     if (!initParticleSystem2D(PartSys, 1)) // init, no additional data needed
@@ -9291,6 +9311,8 @@ void mode_particleghostrider(void) {
   }
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(!wrapX && SEGMENT.check2);
   PartSys->setMotionBlur(SEGMENT.custom1);
   PartSys->sources[0].var = SEGMENT.custom3 >> 1;
 
@@ -9302,12 +9324,20 @@ void mode_particleghostrider(void) {
   }
 
   // enable/disable walls
-  ghostsettings.bounceX = SEGMENT.check2;
+  ghostsettings.bounceX = !wrapX && SEGMENT.check2;
   ghostsettings.bounceY = SEGMENT.check2;
 
   SEGENV.aux0 += (int32_t)SEGENV.step; // step is angle increment
   uint16_t emitangle = SEGENV.aux0 + 32767; // +180°
   int32_t speed = map(SEGMENT.speed, 0, 255, 12, 64);
+  if (wrapX) {
+    const uint16_t circleLife = constrain(((uint32_t(PartSys->maxX) + 1U) / uint32_t(speed)), 48U, 260U);
+    PartSys->sources[0].minLife = circleLife;
+    PartSys->sources[0].maxLife = min(uint16_t(260), uint16_t(circleLife + (circleLife >> 1)));
+  } else {
+    PartSys->sources[0].minLife = 250;
+    PartSys->sources[0].maxLife = 260;
+  }
   PartSys->sources[0].source.vx = ((int32_t)cos16_t(SEGENV.aux0) * speed) / (int32_t)32767;
   PartSys->sources[0].source.vy = ((int32_t)sin16_t(SEGENV.aux0) * speed) / (int32_t)32767;
   PartSys->sources[0].source.ttl = 500; // source never dies (note: setting 'perpetual' is not needed if replenished each frame)
