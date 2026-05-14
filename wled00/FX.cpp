@@ -5781,31 +5781,47 @@ void mode_2Dmetaballs(void) {   // Metaballs by Stefan Petrick. Cannot have one 
   const int rows = SEG_H;
 
   float speed = 0.25f * (1+(SEGMENT.speed>>6));
+  const bool wrapX = SEGMENT.wrap_x;
+  uint16_t bpm1 = 23 * speed;
+  uint16_t bpm2 = 17 * speed;
+  uint16_t bpm3 = 19 * speed;
+  if (!bpm1) bpm1 = 1;
+  if (!bpm2) bpm2 = 1;
+  if (!bpm3) bpm3 = 1;
+  auto wrappedX = [&](uint16_t bpm, uint32_t timebase, bool reverse = false) -> int {
+    int x = (uint32_t(beat16(bpm, timebase)) * cols) >> 16;
+    return reverse ? cols - 1 - x : x;
+  };
 
   // get some 2 random moving points
-  int x2 = map(perlin8(strip.now * speed, 25355, 685), 0, 255, 0, cols-1);
+  int x2 = wrapX ? wrappedX(bpm2, 25355) : map(perlin8(strip.now * speed, 25355, 685), 0, 255, 0, cols-1);
   int y2 = map(perlin8(strip.now * speed, 355, 11685), 0, 255, 0, rows-1);
 
-  int x3 = map(perlin8(strip.now * speed, 55355, 6685), 0, 255, 0, cols-1);
+  int x3 = wrapX ? wrappedX(bpm3, 55355, true) : map(perlin8(strip.now * speed, 55355, 6685), 0, 255, 0, cols-1);
   int y3 = map(perlin8(strip.now * speed, 25355, 22685), 0, 255, 0, rows-1);
 
   // and one Lissajou function
-  int x1 = beatsin8_t(23 * speed, 0, cols-1);
+  int x1 = wrapX ? wrappedX(bpm1, 0) : beatsin8_t(23 * speed, 0, cols-1);
   int y1 = beatsin8_t(28 * speed, 0, rows-1);
+  auto xDistance = [&](int x, int center) -> unsigned {
+    unsigned dx = abs(x - center);
+    if (wrapX) dx = min(dx, unsigned(cols - dx));
+    return dx;
+  };
 
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
       // calculate distances of the 3 points from actual pixel
       // and add them together with weightening
-      unsigned dx = abs(x - x1);
+      unsigned dx = xDistance(x, x1);
       unsigned dy = abs(y - y1);
       unsigned dist = 2 * sqrt32_bw((dx * dx) + (dy * dy));
 
-      dx = abs(x - x2);
+      dx = xDistance(x, x2);
       dy = abs(y - y2);
       dist += sqrt32_bw((dx * dx) + (dy * dy));
 
-      dx = abs(x - x3);
+      dx = xDistance(x, x3);
       dy = abs(y - y3);
       dist += sqrt32_bw((dx * dx) + (dy * dy));
 
@@ -7794,10 +7810,32 @@ void mode_2Ddistortionwaves() {
   unsigned cy2 = beatsin16_t(14-speed,0,rowsScaled);
 
   byte rdistort, gdistort, bdistort;
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint8_t xPhaseCycles = max(1U, ((cols << 3) + 128U) >> 8); // nearest original x*8 phase cycles across width
+  auto xPhase = [&](int x) -> uint8_t {
+    return wrapX ? uint8_t((uint32_t(x) * xPhaseCycles * 256U) / cols) : uint8_t(x << 3);
+  };
+  auto wrappedDelta = [](unsigned pos, unsigned center, unsigned circumference) -> int32_t {
+    int32_t delta = int32_t(pos) - int32_t(center);
+    if (circumference) {
+      const int32_t half = int32_t(circumference >> 1);
+      if (delta > half)       delta -= circumference;
+      else if (delta < -half) delta += circumference;
+    }
+    return delta;
+  };
+  auto waveDistance = [&](unsigned xPos, unsigned xCenter, unsigned yPos, unsigned yCenter) -> uint32_t {
+    if (wrapX) {
+      const int32_t dx = wrappedDelta(xPos, xCenter, colsScaled);
+      return (uint32_t(dx * dx) + (yPos - yCenter) * (yPos - yCenter)) >> 7;
+    }
+    return ((xPos - xCenter) * (xPos - xCenter) + (yPos - yCenter) * (yPos - yCenter)) >> 7;
+  };
 
   unsigned xoffs = 0;
   for (int x = 0; x < cols; x++) {
     xoffs += scale;
+    const uint8_t xphase = xPhase(x);
     unsigned yoffs = 0;
 
     for (int y = 0; y < rows; y++) {
@@ -7805,18 +7843,18 @@ void mode_2Ddistortionwaves() {
 
       if(SEGMENT.check3) {
         // alternate mode from original code
-        rdistort = cos8_t (((x+y)*8+a2)&255)>>1;
-        gdistort = cos8_t (((x+y)*8+a3+32)&255)>>1;
-        bdistort = cos8_t (((x+y)*8+a+64)&255)>>1;
+        rdistort = cos8_t ((xphase+(y<<3)+a2)&255)>>1;
+        gdistort = cos8_t ((xphase+(y<<3)+a3+32)&255)>>1;
+        bdistort = cos8_t ((xphase+(y<<3)+a+64)&255)>>1;
       } else {
-        rdistort = cos8_t((cos8_t(((x<<3)+a )&255)+cos8_t(((y<<3)-a2)&255)+a3   )&255)>>1;
-        gdistort = cos8_t((cos8_t(((x<<3)-a2)&255)+cos8_t(((y<<3)+a3)&255)+a+32 )&255)>>1;
-        bdistort = cos8_t((cos8_t(((x<<3)+a3)&255)+cos8_t(((y<<3)-a) &255)+a2+64)&255)>>1;
+        rdistort = cos8_t((cos8_t((xphase+a )&255)+cos8_t(((y<<3)-a2)&255)+a3   )&255)>>1;
+        gdistort = cos8_t((cos8_t((xphase-a2)&255)+cos8_t(((y<<3)+a3)&255)+a+32 )&255)>>1;
+        bdistort = cos8_t((cos8_t((xphase+a3)&255)+cos8_t(((y<<3)-a) &255)+a2+64)&255)>>1;
       }
 
-      byte valueR = rdistort + ((a- ( ((xoffs - cx)  * (xoffs - cx)  + (yoffs - cy)  * (yoffs - cy))>>7  ))<<1);
-      byte valueG = gdistort + ((a2-( ((xoffs - cx1) * (xoffs - cx1) + (yoffs - cy1) * (yoffs - cy1))>>7 ))<<1);
-      byte valueB = bdistort + ((a3-( ((xoffs - cx2) * (xoffs - cx2) + (yoffs - cy2) * (yoffs - cy2))>>7 ))<<1);
+      byte valueR = rdistort + ((a - waveDistance(xoffs, cx,  yoffs, cy ))<<1);
+      byte valueG = gdistort + ((a2- waveDistance(xoffs, cx1, yoffs, cy1))<<1);
+      byte valueB = bdistort + ((a3- waveDistance(xoffs, cx2, yoffs, cy2))<<1);
 
       valueR = cos8_t(valueR);
       valueG = cos8_t(valueG);
