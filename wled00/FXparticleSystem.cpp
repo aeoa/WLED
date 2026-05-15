@@ -541,6 +541,12 @@ void ParticleSystem2D::pointAttractor(const uint32_t particleindex, PSparticle &
 
   // Calculate the distance between the particle and the attractor
   int32_t dx = attractor.x - particles[particleindex].x;
+  if (particlesettings.wrapX) {
+    const int32_t circumference = maxX + 1;
+    const int32_t halfCircumference = circumference >> 1;
+    if (dx > halfCircumference)       dx -= circumference;
+    else if (dx < -halfCircumference) dx += circumference;
+  }
   int32_t dy = attractor.y - particles[particleindex].y;
 
   // Calculate the force based on inverse square law

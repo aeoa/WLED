@@ -9021,8 +9021,12 @@ static const char _data_FX_MODE_PARTICLEIMPACT[] PROGMEM = "PS Impact@Launches,!
 */
 void mode_particleattractor(void) {
   ParticleSystem2D *PartSys = nullptr;
+  const bool wrapX = SEGMENT.wrap_x;
   PSsettings2D sourcesettings;
-  sourcesettings.asByte = 0b00001100; // PS settings for bounceY, bounceY used for source movement (it always bounces whereas particles do not)
+  sourcesettings.asByte = 0;
+  sourcesettings.wrapX = wrapX;
+  sourcesettings.bounceX = !wrapX;
+  sourcesettings.bounceY = true; // source/attractor bounce vertically
   PSparticleFlags attractorFlags;
   attractorFlags.asByte = 0; // no flags set
   PSparticle *attractor; // particle pointer to the attractor
@@ -9053,6 +9057,8 @@ void mode_particleattractor(void) {
 
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(false);
   PartSys->setColorByAge(SEGMENT.check1);
   PartSys->setParticleSize(SEGMENT.custom1 >> 1); //set size globally
   PartSys->setUsedParticles(map(SEGMENT.intensity, 0, 255, 25, 190));
