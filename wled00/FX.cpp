@@ -8087,6 +8087,21 @@ static const char _data_FX_MODE_2DWAVINGCELL[] PROGMEM = "Waving Cell@!,Blur,Amp
 
 #ifndef WLED_DISABLE_PARTICLESYSTEM2D
 
+static uint16_t particleWrapLife(uint32_t maxX, uint16_t speed, uint16_t maxLife) {
+  uint32_t wrapLife = (((uint32_t)maxX + 1U) * 3U) / ((uint32_t)speed * 5U); // 1.2x half-way around the cylinder
+  return constrain(wrapLife, 8U, (uint32_t)maxLife);
+}
+
+static void particleWrapLifeRange(uint16_t wrapLife, uint16_t maxLifeCap, uint16_t &minLife, uint16_t &maxLife) {
+  minLife = max(uint16_t(4), uint16_t(wrapLife - (wrapLife >> 3)));
+  maxLife = min(maxLifeCap, uint16_t(wrapLife + (wrapLife >> 3)));
+}
+
+static uint8_t particleTtlBrightnessRate(uint16_t maxLife) {
+  const uint16_t fadeFrames = max(uint16_t(1), uint16_t(maxLife >> 2)); // fade during the last quarter of particle life
+  return constrain(uint8_t((255U + fadeFrames - 1U) / fadeFrames), (uint8_t)2, (uint8_t)255);
+}
+
 /*
   Particle System Vortex
   Particles sprayed from center with a rotating spray
@@ -8123,7 +8138,9 @@ void mode_particlevortex(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  PartSys->setWrapX(SEGMENT.wrap_x);
   uint32_t spraycount = min(PartSys->numSources, (uint32_t)(1 + (SEGMENT.custom1 >> 5))); // number of sprays to display, 1-8
+  const uint16_t emitSpeed = (SEGMENT.intensity >> 2) + 1;
   #ifdef ESP8266
   for (i = 1; i < 4; i++) { // need static particles in the center to reduce blinking (would be black every other frame without this hack), just set them there fixed
     int partindex = (int)PartSys->usedParticles - (int)i;
@@ -8186,13 +8203,24 @@ void mode_particlevortex(void) {
   uint16_t angleoffset = 0xFFFF / spraycount; // angle offset for an even distribution
   uint32_t skip = PS_P_HALFRADIUS / (SEGMENT.intensity + 1) + 1; // intensity is emit speed, emit less on low speeds
   if (SEGMENT.call % skip == 0) {
+    uint16_t minLife = 800;
+    uint16_t maxLife = 900;
+    if (SEGMENT.wrap_x) {
+      const uint16_t lifetimeSpeed = emitSpeed + (SEGMENT.custom3 >> 1);
+      particleWrapLifeRange(particleWrapLife(PartSys->maxX, lifetimeSpeed, 900), 900, minLife, maxLife);
+      PartSys->setTtlBrightnessRate(particleTtlBrightnessRate(maxLife));
+    } else {
+      PartSys->setTtlBrightnessRate(2);
+    }
     j = hw_random16(spraycount); // start with random spray so all get a chance to emit a particle if maximum number of particles alive is reached.
     for (i = 0; i < spraycount; i++) { // emit one particle per spray (if available)
       PartSys->sources[j].var = (SEGMENT.custom3 >> 1); //update speed variation
+      PartSys->sources[j].minLife = minLife;
+      PartSys->sources[j].maxLife = maxLife;
       #ifdef ESP8266
       if (SEGMENT.call & 0x01) // every other frame, do not emit to save particles
       #endif
-      PartSys->angleEmit(PartSys->sources[j], SEGENV.aux0 + angleoffset * j, (SEGMENT.intensity >> 2)+1);
+      PartSys->angleEmit(PartSys->sources[j], SEGENV.aux0 + angleoffset * j, emitSpeed);
       j = (j + 1) % spraycount;
     }
   }
@@ -8570,6 +8598,10 @@ void mode_particlepit(void) {
 
   uint32_t i;
   const uint16_t emitInterval = 128 - (SEGMENT.intensity >> 1);
+  if (wrapX && SEGMENT.check3)
+    PartSys->setTtlBrightnessRate(9); // full brightness while ttl >= 29, similar to fading during the last quarter of a 120-frame life
+  else
+    PartSys->setTtlBrightnessRate(2);
 
   if (SEGMENT.call % emitInterval == 0 && SEGMENT.intensity > 0) { // every nth frame emit particles, stop emitting if set to zero
     for (i = 0; i < PartSys->usedParticles; i++) { // emit particles
@@ -9253,6 +9285,7 @@ void mode_particlecenterGEQ(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  PartSys->setWrapX(SEGMENT.wrap_x);
   numSprays = min(PartSys->numSources, (uint32_t)NUMBEROFSOURCES);
 
   um_data_t *um_data = getAudioData();
@@ -9266,6 +9299,7 @@ void mode_particlecenterGEQ(void) {
 
   uint16_t angleoffset = (uint16_t)0xFFFF / (uint16_t)numSprays;
   uint32_t j = hw_random16(numSprays); // start with random spray so all get a chance to emit a particle if maximum number of particles alive is reached.
+  uint16_t maxFadeLife = 0;
   for (i = 0; i < numSprays; i++) {
     if (SEGMENT.call % (32 - (SEGMENT.custom2 >> 3)) == 0 && SEGMENT.custom2 > 0)
       PartSys->sources[j].source.hue += 1 + (SEGMENT.custom2 >> 4);
@@ -9273,6 +9307,17 @@ void mode_particlecenterGEQ(void) {
     PartSys->sources[j].var = SEGMENT.custom3 >> 2;
     int8_t emitspeed = 5 + (((uint32_t)fftResult[j] * ((uint32_t)SEGMENT.speed + 20)) >> 10); // emit speed according to loudness of band
     uint16_t emitangle = j * angleoffset + SEGENV.aux0;
+    if (SEGMENT.wrap_x) {
+      const uint16_t lifetimeSpeed = emitspeed + PartSys->sources[j].var;
+      uint16_t minLife, maxLife;
+      particleWrapLifeRange(particleWrapLife(PartSys->maxX, lifetimeSpeed, 400), 400, minLife, maxLife);
+      PartSys->sources[j].minLife = minLife;
+      PartSys->sources[j].maxLife = maxLife;
+      maxFadeLife = max(maxFadeLife, maxLife);
+    } else {
+      PartSys->sources[j].minLife = 200;
+      PartSys->sources[j].maxLife = 400;
+    }
 
     uint32_t emitparticles = 0;
     if (fftResult[j] > threshold)
@@ -9282,10 +9327,14 @@ void mode_particlecenterGEQ(void) {
       if (hw_random16() % restvolume == 0)
         emitparticles = 1;
     }
-    if (emitparticles)
-      PartSys->angleEmit(PartSys->sources[j], emitangle, emitspeed);
+    if (emitparticles) PartSys->angleEmit(PartSys->sources[j], emitangle, emitspeed);
 
     j = (j + 1) % numSprays;
+  }
+  if (SEGMENT.wrap_x && maxFadeLife) {
+    PartSys->setTtlBrightnessRate(particleTtlBrightnessRate(maxFadeLife));
+  } else {
+    PartSys->setTtlBrightnessRate(2);
   }
   PartSys->update(); // update and render
 }

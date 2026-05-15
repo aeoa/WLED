@@ -176,6 +176,7 @@ public:
   void setColorByAge(const bool enable);
   void setMotionBlur(const uint8_t bluramount); // note: motion blur can only be used if 'particlesize' is set to zero
   void setSmearBlur(const uint8_t bluramount); // enable 2D smeared blurring of full frame
+  void setTtlBrightnessRate(const uint8_t rate); // brightness is min(ttl * rate, 255), default 2
   void setParticleSize(const uint8_t size);
   void setGravity(const int8_t force = 8);
   void enableParticleCollisions(const bool enable, const uint8_t hardness = 255);
@@ -226,6 +227,7 @@ private:
   uint8_t particlesize; // global particle size, 0 = 1 pixel, 1 = 2 pixels, 255 = 10 pixels (note: this is also added to individual sized particles, set to 0 or 1 for standard advanced particle rendering)
   uint8_t motionBlur; // motion blur, values > 100 gives smoother animations. Note: motion blurring does not work if particlesize is > 0
   uint8_t smearBlur; // 2D smeared blurring of full frame
+  uint8_t ttlBrightnessRate; // brightness is min(ttl * ttlBrightnessRate, 255)
 };
 
 // initialization functions (not part of class)

@@ -36,6 +36,7 @@ ParticleSystem2D::ParticleSystem2D(uint32_t width, uint32_t height, uint32_t num
   setParticleSize(1); // 2x2 rendering size by default (disables per particle size control by default)
   motionBlur = 0; //no fading by default
   smearBlur = 0; //no smearing by default
+  ttlBrightnessRate = 2; // full brightness while ttl >= 128
   emitIndex = 0;
   collisionStartIdx = 0;
 
@@ -144,6 +145,10 @@ void ParticleSystem2D::setMotionBlur(uint8_t bluramount) {
 
 void ParticleSystem2D::setSmearBlur(uint8_t bluramount) {
   smearBlur = bluramount;
+}
+
+void ParticleSystem2D::setTtlBrightnessRate(uint8_t rate) {
+  ttlBrightnessRate = max((uint8_t)1, rate);
 }
 
 
@@ -598,7 +603,7 @@ void ParticleSystem2D::render() {
       baseRGB = ColorFromPalette(SEGPALETTE, brightness, 255, LINEARBLEND_NOWRAP);
     }
     else {
-      brightness = min((particles[i].ttl << 1), (int)255);
+      brightness = min((uint32_t)particles[i].ttl * ttlBrightnessRate, (uint32_t)255);
       baseRGB = ColorFromPalette(SEGPALETTE, particles[i].hue, 255, blend);
       if (particles[i].sat < 255) {
         CHSV32 baseHSV = baseRGB;
