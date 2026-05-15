@@ -9522,7 +9522,7 @@ static const char _data_FX_MODE_PARTICLEBLOBS[] PROGMEM = "PS Blobs@Speed,Blobs,
 void mode_particlegalaxy(void) {
   ParticleSystem2D *PartSys = nullptr;
   PSsettings2D sourcesettings;
-  sourcesettings.asByte = 0b00001100; // PS settings for bounceY, bounceY used for source movement (it always bounces whereas particles do not)
+  sourcesettings.asByte = 0; // source movement settings
   if (SEGMENT.call == 0) { // initialization
     if (!initParticleSystem2D(PartSys, 1, 0, true)) // init using 1 source and advanced particle settings
       FX_FALLBACK_STATIC; // allocation failed or not 2D
@@ -9543,6 +9543,12 @@ void mode_particlegalaxy(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
+  const bool wrapX = SEGMENT.wrap_x;
+  PartSys->setWrapX(wrapX);
+  PartSys->setBounceX(false);
+  sourcesettings.wrapX = wrapX;
+  sourcesettings.bounceX = !wrapX;
+  sourcesettings.bounceY = true; // source bounces vertically, whereas particles do not
   uint8_t particlesize = SEGMENT.custom1;
   PartSys->setParticleSize(particlesize); // set size globally
   PartSys->setMotionBlur(250 * SEGMENT.check3); // adds trails to single/quad pixel particles, no effect if size > 1
@@ -9573,6 +9579,12 @@ void mode_particlegalaxy(void) {
     if (PartSys->particles[i].ttl == 0) continue; //skip dead particles
     // (dx/dy): vector pointing from particle to center
     int32_t dx = centerx - PartSys->particles[i].x;
+    if (wrapX) {
+      const int32_t circumference = PartSys->maxX + 1;
+      const int32_t halfCircumference = circumference >> 1;
+      if (dx > halfCircumference)       dx -= circumference;
+      else if (dx < -halfCircumference) dx += circumference;
+    }
     int32_t dy = centery - PartSys->particles[i].y;
     //speed towards center:
     int32_t distance = sqrt32_bw(dx * dx + dy * dy); // absolute distance to center
