@@ -5549,10 +5549,18 @@ void mode_2DHiphotic() {                        //  By: ldirko  https://editor.s
   const int cols = SEG_W;
   const int rows = SEG_H;
   const uint32_t a = strip.now / ((SEGMENT.custom3>>1)+1);
+  const bool wrapX = SEGMENT.wrap_x;
+  uint16_t xCycles = 0; // nearest original X phase cycles
+  if (wrapX && SEGMENT.speed) {
+    xCycles = ((uint32_t)cols * SEGMENT.speed + 2048U) >> 12;
+    if (xCycles == 0) xCycles = 1;
+  }
 
   for (int x = 0; x < cols; x++) {
+    const uint8_t xPhase = wrapX ? uint8_t(((uint32_t)x * xCycles * 256U) / cols) : uint8_t(x * SEGMENT.speed / 16);
     for (int y = 0; y < rows; y++) {
-      SEGMENT.setPixelColorXY(x, y, SEGMENT.color_from_palette(sin8_t(cos8_t(x * SEGMENT.speed/16 + a / 3) + sin8_t(y * SEGMENT.intensity/16 + a / 4) + a), false, PALETTE_SOLID_WRAP, 0));
+      const uint8_t yPhase = y * SEGMENT.intensity / 16;
+      SEGMENT.setPixelColorXY(x, y, SEGMENT.color_from_palette(sin8_t(cos8_t(xPhase + a / 3) + sin8_t(yPhase + a / 4) + a), false, PALETTE_SOLID_WRAP, 0));
     }
   }
 } // mode_2DHiphotic()
@@ -6077,11 +6085,21 @@ void mode_2Dtartan(void) {          // By: Elliott Kember  https://editor.soulma
   int offsetX = beatsin16_t(3, -360, 360);
   int offsetY = beatsin16_t(2, -360, 360);
   int sharpness = SEGMENT.custom3 / 8; // 0-3
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xHueStep = beatsin16_t(10, 1, 10);
+  const uint16_t xHueCycles = wrapX ? (((uint32_t)cols * xHueStep + 128U) >> 8) : 0; // nearest original X hue cycles
+  uint16_t xBriCycles = 0; // nearest original X brightness cycles
+  if (wrapX && SEGMENT.speed) {
+    xBriCycles = ((uint32_t)cols * SEGMENT.speed + 256U) >> 9;
+    if (xBriCycles == 0) xBriCycles = 1;
+  }
 
   for (int x = 0; x < cols; x++) {
+    const uint8_t xHuePhase = wrapX ? uint8_t(((uint32_t)x * xHueCycles * 256U) / cols) : uint8_t(x * xHueStep);
+    const uint8_t xBriPhase = wrapX ? uint8_t(((uint32_t)x * xBriCycles * 256U) / cols) : uint8_t(x * SEGMENT.speed / 2);
     for (int y = 0; y < rows; y++) {
-      hue = x * beatsin16_t(10, 1, 10) + offsetY;
-      intensity = bri = sin8_t(x * SEGMENT.speed/2 + offsetX);
+      hue = xHuePhase + offsetY;
+      intensity = bri = sin8_t(xBriPhase + offsetX);
       for (int i=0; i<sharpness; i++) intensity *= bri;
       intensity >>= 8*sharpness;
       SEGMENT.setPixelColorXY(x, y, ColorFromPalette(SEGPALETTE, hue, intensity, LINEARBLEND));
@@ -8074,9 +8092,18 @@ void mode_2Dwavingcell() {
   uint32_t aX = SEGMENT.custom1/16 + 9;
   uint32_t aY = SEGMENT.custom2/16 + 1;
   uint32_t aZ = SEGMENT.custom3 + 1;
-   for (int x = 0; x < cols; x++) {
+  const bool wrapX = SEGMENT.wrap_x;
+  uint16_t xCycles = 0; // nearest original X phase cycles
+  if (wrapX) {
+    xCycles = ((uint32_t)cols * aX + 128U) >> 8;
+    if (xCycles == 0) xCycles = 1;
+  }
+  for (int x = 0; x < cols; x++) {
+    const uint8_t xPhase = wrapX ? uint8_t(((uint32_t)x * xCycles * 256U) / cols) : uint8_t(x * aX);
     for (int y = 0; y < rows; y++) {
-      uint32_t wave = sin8_t((x * aX) + sin8_t((((y<<8) + t) * aY)>>8)) + cos8_t(y * aZ); // bit shifts to increase temporal resolution
+      const uint8_t yPhase = (((y<<8) + t) * aY) >> 8; // bit shifts to increase temporal resolution
+      const uint8_t zPhase = y * aZ;
+      uint32_t wave = sin8_t(xPhase + sin8_t(yPhase)) + cos8_t(zPhase);
       uint8_t colorIndex = wave + (t>>(8-(SEGMENT.check2*3)));
       SEGMENT.setPixelColorXY(x, y, ColorFromPalette(SEGPALETTE, colorIndex));
     }
