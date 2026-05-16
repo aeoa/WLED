@@ -5204,6 +5204,9 @@ void mode_2DColoredBursts() {              // By: ldirko   https://editor.soulma
   bool grad = SEGMENT.check1;
 
   byte numLines = SEGMENT.intensity/16 + 1;
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xDriftBpm = 1 + SEGMENT.speed / 32;  // about 25% of slowest endpoint speed
+  const int xOffset = wrapX ? ((uint32_t)beat16(xDriftBpm) * cols) >> 16 : 0;
 
   SEGENV.aux0++;  // hue
   SEGMENT.fadeToBlackBy(40 - SEGMENT.check2 * 8);
@@ -5222,14 +5225,15 @@ void mode_2DColoredBursts() {              // By: ldirko   https://editor.soulma
       uint8_t rate = j * 255 / steps;
       byte dx = lerp8by8(x1, y1, rate);
       byte dy = lerp8by8(x2, y2, rate);
+      const int drawX = dx + xOffset;
       //SEGMENT.setPixelColorXY(dx, dy, grad ? color_fade(color, (255-rate), true) : color); // use addPixelColorXY for different look
-      SEGMENT.addPixelColorXY(dx, dy, color); // use setPixelColorXY for different look
-      if (grad) SEGMENT.fadePixelColorXY(dx, dy, rate);
+      SEGMENT.addPixelColorXY(drawX, dy, color); // use setPixelColorXY for different look
+      if (grad) SEGMENT.fadePixelColorXY(drawX, dy, rate);
     }
 
     if (dot) { //add white point at the ends of line
-      SEGMENT.setPixelColorXY(x1, x2, WHITE);
-      SEGMENT.setPixelColorXY(y1, y2, DARKSLATEGRAY);
+      SEGMENT.setPixelColorXY(x1 + xOffset, x2, WHITE);
+      SEGMENT.setPixelColorXY(y1 + xOffset, y2, DARKSLATEGRAY);
     }
   }
   SEGMENT.blur(SEGMENT.custom3>>1, SEGMENT.check2);
