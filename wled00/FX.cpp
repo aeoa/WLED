@@ -5895,8 +5895,17 @@ void mode_2DPlasmaball(void) {                   // By: Stepko https://editor.so
 
   SEGMENT.fadeToBlackBy(SEGMENT.custom1>>2);
   uint_fast32_t t = (strip.now * 8) / (256 - SEGMENT.speed);  // optimized to avoid float
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xNoisePeriod = cols * 30U;
+  auto wrappedDeltaX = [cols](int pos, int target) -> int {
+    int delta = (pos - target) % cols;
+    if (delta > cols / 2)       delta -= cols;
+    else if (delta < -cols / 2) delta += cols;
+    return delta;
+  };
   for (int i = 0; i < cols; i++) {
-    unsigned thisVal = perlin8(i * 30, t, t);
+    const uint16_t xNoise = i * 30U;
+    unsigned thisVal = wrapX ? perlin8_periodicX(xNoise, xNoisePeriod, t, t) : perlin8(xNoise, t, t);
     unsigned thisMax = map(thisVal, 0, 255, 0, cols-1);
     for (int j = 0; j < rows; j++) {
       unsigned thisVal_ = perlin8(t, j * 30, t);
@@ -5905,13 +5914,20 @@ void mode_2DPlasmaball(void) {                   // By: Stepko https://editor.so
       int y = (j + thisMax - cols / 2);
       int cx = (i + thisMax_);
       int cy = (j + thisMax);
+      bool draw = wrapX ? (abs(wrappedDeltaX(x, y)) < 2 ||
+                           abs(wrappedDeltaX(x, cols - 1 - y)) < 2 ||
+                           abs(wrappedDeltaX(cx, cols)) < 2 ||
+                           abs(wrappedDeltaX(cx, cols - 1)) < 2 ||
+                           (rows - cy == 0) ||
+                           (rows - 1 - cy == 0))
+                        : (((x - y > -2) && (x - y < 2)) ||
+                           ((cols - 1 - x - y) > -2 && (cols - 1 - x - y < 2)) ||
+                           (cols - cx == 0) ||
+                           (cols - 1 - cx == 0) ||
+                           (rows - cy == 0) ||
+                           (rows - 1 - cy == 0));
 
-      SEGMENT.addPixelColorXY(i, j, ((x - y > -2) && (x - y < 2)) ||
-                                    ((cols - 1 - x - y) > -2 && (cols - 1 - x - y < 2)) ||
-                                    (cols - cx == 0) ||
-                                    (cols - 1 - cx == 0) ||
-                                    ((rows - cy == 0) ||
-                                    (rows - 1 - cy == 0)) ? ColorFromPalette(SEGPALETTE, beat8(5), thisVal, LINEARBLEND) : CRGB::Black);
+      SEGMENT.addPixelColorXY(i, j, draw ? ColorFromPalette(SEGPALETTE, beat8(5), thisVal, LINEARBLEND) : CRGB::Black);
     }
   }
   SEGMENT.blur(SEGMENT.custom2>>5);
