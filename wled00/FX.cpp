@@ -8005,10 +8005,16 @@ static void soapPixels(bool isRow, uint8_t *noise3d, CRGB *pixels) {
   const int  rows = SEG_H;
   const auto XY   = [&](int x, int y) { return x + y * cols; };
   const auto abs  = [](int x) { return x<0 ? -x : x; };
+  const auto wrap  = [](int value, int limit) {
+    value %= limit;
+    if (value < 0) value += limit;
+    return value;
+  };
   const int  tRC  = isRow ? rows : cols; // transpose if isRow
   const int  tCR  = isRow ? cols : rows; // transpose if isRow
   const int  amplitude = max(1, (tCR - 8) >> 3) * (1 + (SEGMENT.custom1 >> 5));
   const int  shift = 0; //(128 - SEGMENT.custom2)*2;
+  const bool wrapX = SEGMENT.wrap_x && isRow;
 
   CRGB ledsbuff[tCR];
 
@@ -8025,8 +8031,8 @@ static void soapPixels(bool isRow, uint8_t *noise3d, CRGB *pixels) {
         zD = j + delta;
         zF = zD + 1;
       }
-      int yA = abs(zD)%tCR;
-      int yB = abs(zF)%tCR;
+      int yA = wrapX ? wrap(zD, tCR) : abs(zD)%tCR;
+      int yB = wrapX ? wrap(zF, tCR) : abs(zF)%tCR;
       int xA = i;
       int xB = i;
       if (isRow) {
@@ -8037,10 +8043,10 @@ static void soapPixels(bool isRow, uint8_t *noise3d, CRGB *pixels) {
       const int indxB = XY(xB,yB);
       CRGB PixelA;
       CRGB PixelB;
-      if ((zD >= 0) && (zD < tCR)) PixelA = pixels[indxA];
-      else                         PixelA = ColorFromPalette(SEGPALETTE, ~noise3d[indxA]*3);
-      if ((zF >= 0) && (zF < tCR)) PixelB = pixels[indxB];
-      else                         PixelB = ColorFromPalette(SEGPALETTE, ~noise3d[indxB]*3);
+      if (wrapX || ((zD >= 0) && (zD < tCR))) PixelA = pixels[indxA];
+      else                                    PixelA = ColorFromPalette(SEGPALETTE, ~noise3d[indxA]*3);
+      if (wrapX || ((zF >= 0) && (zF < tCR))) PixelB = pixels[indxB];
+      else                                    PixelB = ColorFromPalette(SEGPALETTE, ~noise3d[indxB]*3);
       ledsbuff[j] = (PixelA.nscale8(ease8InOutCubic(255 - fraction))) + (PixelB.nscale8(ease8InOutCubic(fraction)));
     }
     for (int j = 0; j < tCR; j++) {
