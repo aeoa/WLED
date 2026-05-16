@@ -8097,24 +8097,30 @@ void mode_2Doctopus() {
   } map_t;
 
   const size_t dataSize = SEGMENT.width() * SEGMENT.height() * sizeof(map_t); // prevent reallocation if mirrored or grouped
-  if (!SEGENV.allocateData(dataSize + 2)) FX_FALLBACK_STATIC; //allocation failed
+  if (!SEGENV.allocateData(dataSize + 3)) FX_FALLBACK_STATIC; //allocation failed
 
   map_t *rMap = reinterpret_cast<map_t*>(SEGENV.data);
   uint8_t *offsX = reinterpret_cast<uint8_t*>(SEGENV.data + dataSize);
   uint8_t *offsY = reinterpret_cast<uint8_t*>(SEGENV.data + dataSize + 1);
+  uint8_t *wrapState = reinterpret_cast<uint8_t*>(SEGENV.data + dataSize + 2);
 
   // re-init if SEGMENT dimensions or offset changed
-  if (SEGENV.call == 0 || SEGENV.aux0 != cols || SEGENV.aux1 != rows || SEGMENT.custom1 != *offsX || SEGMENT.custom2 != *offsY) {
+  if (SEGENV.call == 0 || SEGENV.aux0 != cols || SEGENV.aux1 != rows || SEGMENT.custom1 != *offsX || SEGMENT.custom2 != *offsY || SEGMENT.wrap_x != bool(*wrapState)) {
     SEGENV.step = 0; // t
     SEGENV.aux0 = cols;
     SEGENV.aux1 = rows;
     *offsX = SEGMENT.custom1;
     *offsY = SEGMENT.custom2;
+    *wrapState = SEGMENT.wrap_x;
     const int C_X = (cols / 2) + ((SEGMENT.custom1 - 128)*cols)/255;
     const int C_Y = (rows / 2) + ((SEGMENT.custom2 - 128)*rows)/255;
     for (int x = 0; x < cols; x++) {
       for (int y = 0; y < rows; y++) {
         int dx = (x - C_X);
+        if (SEGMENT.wrap_x) {
+          if (dx > cols / 2)       dx -= cols;
+          else if (dx < -cols / 2) dx += cols;
+        }
         int dy = (y - C_Y);
         rMap[XY(x, y)].angle  = int(40.7436f * atan2_t(dy, dx));  // avoid 128*atan2()/PI
         rMap[XY(x, y)].radius = sqrtf(dx * dx + dy * dy) * mapp; //thanks Sutaburosu
