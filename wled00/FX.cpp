@@ -6695,13 +6695,19 @@ void mode_2Dplasmarotozoom() {
   byte *plasma = reinterpret_cast<byte*>(SEGENV.data+sizeof(float));
 
   unsigned ms = strip.now/15;  
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xNoisePeriod = cols * 40U;
+  const uint16_t xPatternCycles = max(1U, ((cols * 4U) + 128U) >> 8); // nearest original i*4 phase cycles across width
 
   // plasma
   for (int j = 0; j < rows; j++) {
     int index = j*cols;
     for (int i = 0; i < cols; i++) {
-      if (SEGMENT.check1) plasma[index+i] = (i * 4 ^ j * 4) + ms / 6;
-      else                plasma[index+i] = inoise8(i * 40, j * 40, ms);
+      const uint16_t xNoise = i * 40U;
+      const uint16_t yNoise = j * 40U;
+      const uint8_t xPattern = wrapX ? uint8_t(((uint32_t)i * xPatternCycles * 256U) / cols) : i * 4;
+      if (SEGMENT.check1) plasma[index+i] = (xPattern ^ j * 4) + ms / 6;
+      else                plasma[index+i] = wrapX ? perlin8_periodicX(xNoise, xNoisePeriod, yNoise, ms) : perlin8(xNoise, yNoise, ms);
     }
   }
 
@@ -6709,13 +6715,48 @@ void mode_2Dplasmarotozoom() {
   float f       = (sin_t(*a/2)+((128-SEGMENT.intensity)/128.0f)+1.1f)/1.5f;  // scale factor
   float kosinus = cos_t(*a) * f;
   float sinus   = sin_t(*a) * f;
+  int16_t uCycleLo = 0, vCycleLo = 0;
+  uint8_t uCycleBlend = 0, vCycleBlend = 0;
+  auto splitCycle = [](float value, int16_t &cycle, uint8_t &blend) {
+    cycle = int16_t(value);
+    if (value < 0.0f && value != float(cycle)) cycle--;
+    blend = uint8_t((value - cycle) * 255.0f);
+  };
+  auto wrappedCoord = [](float value, int limit) -> int {
+    int coord = int(value);
+    coord %= limit;
+    if (coord < 0) coord += limit;
+    return coord;
+  };
+  auto wrappedRotoSample = [&](int i, int j, int16_t uCycle, int16_t vCycle) -> uint8_t {
+    float u1 = i * uCycle;
+    float v1 = (float)i * vCycle * rows / cols;
+    int u = wrappedCoord(u1 - j * sinus, cols);
+    int v = wrappedCoord(v1 + j * kosinus, rows);
+    return plasma[v*cols+u];
+  };
+  if (wrapX) {
+    splitCycle(kosinus, uCycleLo, uCycleBlend);
+    splitCycle(sinus * cols / rows, vCycleLo, vCycleBlend);
+  }
   for (int i = 0; i < cols; i++) {
     float u1 = i * kosinus;
     float v1 = i * sinus;
     for (int j = 0; j < rows; j++) {
+      if (wrapX) {
+        uint8_t p00 = wrappedRotoSample(i, j, uCycleLo,   vCycleLo);
+        uint8_t p10 = wrappedRotoSample(i, j, uCycleLo+1, vCycleLo);
+        uint8_t p01 = wrappedRotoSample(i, j, uCycleLo,   vCycleLo+1);
+        uint8_t p11 = wrappedRotoSample(i, j, uCycleLo+1, vCycleLo+1);
+        uint8_t pu0 = lerp8by8(p00, p10, uCycleBlend);
+        uint8_t pu1 = lerp8by8(p01, p11, uCycleBlend);
+        uint8_t colorIndex = lerp8by8(pu0, pu1, vCycleBlend);
+        SEGMENT.setPixelColorXY(i, j, SEGMENT.color_from_palette(colorIndex, false, PALETTE_SOLID_WRAP, 255));
+      } else {
         byte u = abs8(u1 - j * sinus) % cols;
         byte v = abs8(v1 + j * kosinus) % rows;
         SEGMENT.setPixelColorXY(i, j, SEGMENT.color_from_palette(plasma[v*cols+u], false, PALETTE_SOLID_WRAP, 255));
+      }
     }
   }
   *a -= 0.03f + float(SEGENV.speed-128)*0.0002f;  // rotation speed
