@@ -5345,6 +5345,8 @@ void mode_2Dfirenoise(void) {               // firenoise2d. By Andrew Tuline. Ye
   unsigned xscale = SEGMENT.intensity*4;
   unsigned yscale = SEGMENT.speed*8;
   unsigned indexx = 0;
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xPeriod = (uint32_t)cols * yscale * rows / 255U;
 
   CRGBPalette16 pal = SEGMENT.check1 ? SEGPALETTE : CRGBPalette16(CRGB::Black,     CRGB::Black,      CRGB::Black,  CRGB::Black,
                                                                   CRGB::Red,       CRGB::Red,        CRGB::Red,    CRGB::DarkOrange,
@@ -5352,7 +5354,10 @@ void mode_2Dfirenoise(void) {               // firenoise2d. By Andrew Tuline. Ye
                                                                   CRGB::Yellow,    CRGB::Orange,     CRGB::Yellow, CRGB::Yellow);
   for (int j=0; j < cols; j++) {
     for (int i=0; i < rows; i++) {
-      indexx = perlin8(j*yscale*rows/255, i*xscale+strip.now/4);                                               // We're moving along our Perlin map.
+      const uint16_t xNoise = j*yscale*rows/255;
+      const uint16_t yNoise = i*xscale+strip.now/4;
+      indexx = wrapX ? perlin8_periodicX(xNoise, xPeriod, yNoise)
+                     : perlin8(xNoise, yNoise);                                                               // We're moving along our Perlin map.
       SEGMENT.setPixelColorXY(j, i, ColorFromPalette(pal, min(i*indexx/11, 225U), i*255/rows, LINEARBLEND));   // With that value, look up the 8 bit colour palette value and assign it to the current LED.    
     } // for i
   } // for j
@@ -5862,10 +5867,16 @@ void mode_2Dnoise(void) {                  // By Andrew Tuline
   const int rows = SEG_H;
 
   const unsigned scale  = SEGMENT.intensity+2;
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xPeriod = cols * scale;
 
   for (int y = 0; y < rows; y++) {
     for (int x = 0; x < cols; x++) {
-      uint8_t pixelHue8 = perlin8(x * scale, y * scale, strip.now / (16 - SEGMENT.speed/16));
+      const uint16_t xNoise = x * scale;
+      const uint16_t yNoise = y * scale;
+      const uint16_t zNoise = strip.now / (16 - SEGMENT.speed/16);
+      uint8_t pixelHue8 = wrapX ? perlin8_periodicX(xNoise, xPeriod, yNoise, zNoise)
+                                : perlin8(xNoise, yNoise, zNoise);
       SEGMENT.setPixelColorXY(x, y, ColorFromPalette(SEGPALETTE, pixelHue8));
     }
   }
@@ -5927,11 +5938,17 @@ void mode_2DPolarLights(void) {        // By: Kostyantyn Matviyevskyy  https://e
   unsigned adjScale = map(cols, 8, 64, 310, 63);
   unsigned _scale = map(SEGMENT.intensity, 0, 255, 30, adjScale);
   int _speed = map(SEGMENT.speed, 0, 255, 128, 16);
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xPeriod = cols * _scale;
 
   for (int x = 0; x < cols; x++) {
     for (int y = 0; y < rows; y++) {
       SEGENV.step++;
-      uint8_t palindex = qsub8(perlin8((SEGENV.step%2) + x * _scale, y * 16 + SEGENV.step % 16, SEGENV.step / _speed), fabsf((float)rows / 2.0f - (float)y) * adjustHeight);
+      const uint16_t xNoise = (SEGENV.step%2) + x * _scale;
+      const uint16_t yNoise = y * 16 + SEGENV.step % 16;
+      const uint16_t zNoise = SEGENV.step / _speed;
+      uint8_t palindex = qsub8(wrapX ? perlin8_periodicX(xNoise, xPeriod, yNoise, zNoise)
+                                     : perlin8(xNoise, yNoise, zNoise), fabsf((float)rows / 2.0f - (float)y) * adjustHeight);
       uint8_t palbrightness = palindex;
       if(SEGMENT.check1) palindex = 255 - palindex; //flip palette
       SEGMENT.setPixelColorXY(x, y, SEGMENT.color_from_palette(palindex, false, false, 255, palbrightness));

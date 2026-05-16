@@ -473,6 +473,8 @@ uint16_t perlin16(uint32_t x, uint32_t y, uint32_t z);
 uint8_t perlin8(uint16_t x);
 uint8_t perlin8(uint16_t x, uint16_t y);
 uint8_t perlin8(uint16_t x, uint16_t y, uint16_t z);
+uint8_t perlin8_periodicX(uint16_t x, uint16_t xPeriod, uint16_t y);
+uint8_t perlin8_periodicX(uint16_t x, uint16_t xPeriod, uint16_t y, uint16_t z);
 
 // fast (true) random numbers using hardware RNG, all functions return values in the range lowerlimit to upperlimit-1
 // note: for true random numbers with high entropy, do not call faster than every 200ns (5MHz)

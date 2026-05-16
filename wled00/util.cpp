@@ -1256,16 +1256,120 @@ uint16_t perlin16(uint32_t x, uint32_t y, uint32_t z) {
   return ((perlin3D_raw(x, y, z) * 1731) >> 10) + 33147; //scale to 16bit and offset (fastled range: about 4766 to 60840)
 }
 
+static uint8_t scalePerlin2DTo8(int32_t noise) {
+  return (((noise * 1620) >> 10) + 32771) >> 8;
+}
+
+static uint8_t scalePerlin3DTo8(int32_t noise) {
+  return (((noise * 2015) >> 10) + 33168) >> 8;
+}
+
 uint8_t perlin8(uint16_t x) {
   return (((perlin1D_raw((uint32_t)x << 8, true) * 1353) >> 10) + 32769) >> 8; //scale to 16 bit, offset, then scale to 8bit
 }
 
 uint8_t perlin8(uint16_t x, uint16_t y) {
-  return (((perlin2D_raw((uint32_t)x << 8, (uint32_t)y << 8, true) * 1620) >> 10) + 32771) >> 8; //scale to 16 bit, offset, then scale to 8bit
+  return scalePerlin2DTo8(perlin2D_raw((uint32_t)x << 8, (uint32_t)y << 8, true)); //scale to 16 bit, offset, then scale to 8bit
 }
 
 uint8_t perlin8(uint16_t x, uint16_t y, uint16_t z) {
-  return (((perlin3D_raw((uint32_t)x << 8, (uint32_t)y << 8, (uint32_t)z << 8, true) * 2015) >> 10) + 33168) >> 8; //scale to 16 bit, offset, then scale to 8bit
+  return scalePerlin3DTo8(perlin3D_raw((uint32_t)x << 8, (uint32_t)y << 8, (uint32_t)z << 8, true)); //scale to 16 bit, offset, then scale to 8bit
+}
+
+static uint16_t perlinPeriodicXCoord(uint16_t x, uint16_t xPeriod, uint16_t cellPeriod) {
+  x %= xPeriod;
+  return ((uint32_t)x * cellPeriod * 256U) / xPeriod;
+}
+
+static uint16_t perlinPeriodicXCellPeriod(uint16_t xPeriod) {
+  uint16_t cellPeriod = (xPeriod + 128U) >> 8;
+  return cellPeriod ? cellPeriod : 1;
+}
+
+static int32_t perlin2D_raw_periodicX(uint32_t x, uint32_t y, uint16_t xCellPeriod) {
+  uint32_t x0 = x >> 16;
+  int32_t y0 = y >> 16;
+  uint32_t x1 = x0 + 1;
+  int32_t y1 = y0 + 1;
+
+  x0 %= xCellPeriod;
+  x1 %= xCellPeriod;
+  y1 = y1 & 0xFF;
+
+  int32_t dx0 = x & 0xFFFF;
+  int32_t dy0 = y & 0xFFFF;
+  int32_t dx1 = dx0 - 0x10000;
+  int32_t dy1 = dy0 - 0x10000;
+
+  int32_t g00 = gradient2D(x0, dx0, y0, dy0);
+  int32_t g10 = gradient2D(x1, dx1, y0, dy0);
+  int32_t g01 = gradient2D(x0, dx0, y1, dy1);
+  int32_t g11 = gradient2D(x1, dx1, y1, dy1);
+
+  uint32_t tx = smoothstep(dx0);
+  uint32_t ty = smoothstep(dy0);
+
+  int32_t nx0 = lerpPerlin(g00, g10, tx);
+  int32_t nx1 = lerpPerlin(g01, g11, tx);
+
+  return lerpPerlin(nx0, nx1, ty);
+}
+
+static int32_t perlin3D_raw_periodicX(uint32_t x, uint32_t y, uint32_t z, uint16_t xCellPeriod) {
+  uint32_t x0 = x >> 16;
+  int32_t y0 = y >> 16;
+  int32_t z0 = z >> 16;
+  uint32_t x1 = x0 + 1;
+  int32_t y1 = y0 + 1;
+  int32_t z1 = z0 + 1;
+
+  x0 %= xCellPeriod;
+  x1 %= xCellPeriod;
+  y1 = y1 & 0xFF;
+  z1 = z1 & 0xFF;
+
+  int32_t dx0 = x & 0xFFFF;
+  int32_t dy0 = y & 0xFFFF;
+  int32_t dz0 = z & 0xFFFF;
+  int32_t dx1 = dx0 - 0x10000;
+  int32_t dy1 = dy0 - 0x10000;
+  int32_t dz1 = dz0 - 0x10000;
+
+  int32_t g000 = gradient3D(x0, dx0, y0, dy0, z0, dz0);
+  int32_t g001 = gradient3D(x0, dx0, y0, dy0, z1, dz1);
+  int32_t g010 = gradient3D(x0, dx0, y1, dy1, z0, dz0);
+  int32_t g011 = gradient3D(x0, dx0, y1, dy1, z1, dz1);
+  int32_t g100 = gradient3D(x1, dx1, y0, dy0, z0, dz0);
+  int32_t g101 = gradient3D(x1, dx1, y0, dy0, z1, dz1);
+  int32_t g110 = gradient3D(x1, dx1, y1, dy1, z0, dz0);
+  int32_t g111 = gradient3D(x1, dx1, y1, dy1, z1, dz1);
+
+  uint32_t tx = smoothstep(dx0);
+  uint32_t ty = smoothstep(dy0);
+  uint32_t tz = smoothstep(dz0);
+
+  int32_t nx0 = lerpPerlin(g000, g100, tx);
+  int32_t nx1 = lerpPerlin(g010, g110, tx);
+  int32_t nx2 = lerpPerlin(g001, g101, tx);
+  int32_t nx3 = lerpPerlin(g011, g111, tx);
+  int32_t ny0 = lerpPerlin(nx0, nx1, ty);
+  int32_t ny1 = lerpPerlin(nx2, nx3, ty);
+
+  return lerpPerlin(ny0, ny1, tz);
+}
+
+uint8_t perlin8_periodicX(uint16_t x, uint16_t xPeriod, uint16_t y) {
+  if (xPeriod == 0) return perlin8(x, y);
+  const uint16_t cellPeriod = perlinPeriodicXCellPeriod(xPeriod);
+  x = perlinPeriodicXCoord(x, xPeriod, cellPeriod);
+  return scalePerlin2DTo8(perlin2D_raw_periodicX((uint32_t)x << 8, (uint32_t)y << 8, cellPeriod));
+}
+
+uint8_t perlin8_periodicX(uint16_t x, uint16_t xPeriod, uint16_t y, uint16_t z) {
+  if (xPeriod == 0) return perlin8(x, y, z);
+  const uint16_t cellPeriod = perlinPeriodicXCellPeriod(xPeriod);
+  x = perlinPeriodicXCoord(x, xPeriod, cellPeriod);
+  return scalePerlin3DTo8(perlin3D_raw_periodicX((uint32_t)x << 8, (uint32_t)y << 8, (uint32_t)z << 8, cellPeriod));
 }
 
 // Platform-agnostic SHA1 computation from String input
@@ -1363,4 +1467,3 @@ String getDeviceId() {
 
   return cachedDeviceId;
 }
-
