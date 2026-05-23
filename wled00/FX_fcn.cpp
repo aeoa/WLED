@@ -1311,14 +1311,52 @@ void WS2812FX::finalizeInit() {
   DEBUG_PRINTF_P(PSTR("Heap after strip init: %uB\n"), getFreeHeapSize());
 }
 
+#ifdef WLED_ENABLE_CAPTURE_MODE
+void WS2812FX::deserializeCapture(JsonObject capture) {
+  if (capture.isNull()) return;
+
+  if (capture.containsKey(F("on")))       _captureMode       = capture[F("on")]       | _captureMode;
+  if (capture.containsKey(F("step")))     _captureStepMode   = capture[F("step")]     | _captureStepMode;
+  if (capture.containsKey(F("skipShow"))) _captureSkipOutput = capture[F("skipShow")] | _captureSkipOutput;
+
+  uint16_t fps = capture[F("fps")] | 0;
+  if (fps) _captureFrameMs = 1000U / constrain(fps, 1U, 250U);
+  uint16_t frameMs = capture[F("ms")] | 0;
+  if (frameMs) _captureFrameMs = constrain(frameMs, 1U, 1000U);
+
+  if (capture[F("reset")] | false) {
+    _captureFrame = 0;
+    _captureFrameReady = false;
+    _captureFrameRequested = false;
+    restartRuntime();
+    resetTimebase();
+  }
+
+  if (capture[F("next")] | false) {
+    _captureFrameRequested = true;
+    trigger();
+  }
+}
+#endif
+
 void WS2812FX::service() {
   unsigned long nowUp = millis(); // Be aware, millis() rolls over every 49 days
   unsigned long elapsed = nowUp - _lastServiceShow;
   bool timeToShow = (elapsed >= _frametime);                        // all segments are running at the same speed
   if (_triggered || _targetFps == FPS_UNLIMITED) timeToShow = true; // unlimited mode = no frametime; strip.trigger() can overrule timing
 
+#ifdef WLED_ENABLE_CAPTURE_MODE
+  if (_captureMode) {
+    if (_captureFrameReady) return; // wait until the capture client consumes this frame
+    timeToShow = _captureStepMode ? _captureFrameRequested : true;
+    now = _captureFrame * (unsigned long)_captureFrameMs;
+  } else
+#endif
   now = nowUp + timebase;                               // common time base for all effects
   if (!timeToShow) return;                              // too early for service
+#ifdef WLED_ENABLE_CAPTURE_MODE
+  if (!_captureMode)
+#endif
   if (_suspend || elapsed <= MIN_FRAME_DELAY) return;   // keep wifi alive - no matter if triggered or unlimited
 
   _isServicing = true;
@@ -1371,7 +1409,16 @@ void WS2812FX::service() {
     yield();
     Segment::handleRandomPalette(); // slowly transition random palette; move it into for loop when each segment has individual random palette
     _lastServiceShow = nowUp; // update timestamp, for precise FPS control
+#ifdef WLED_ENABLE_CAPTURE_MODE
+    show(_captureMode && _captureSkipOutput);
+    if (_captureMode) {
+      _captureFrame++;
+      _captureFrameRequested = false;
+      _captureFrameReady = true;
+    }
+#else
     show();
+#endif
   }
   #ifdef WLED_DEBUG
   if ((_targetFps != FPS_UNLIMITED) && (millis() - nowUp > _frametime)) DEBUG_PRINTF_P(PSTR("Slow strip %u/%d.\n"), (unsigned)(millis()-nowUp), (int)_frametime);
@@ -1727,7 +1774,7 @@ void WS2812FX::blendSegment(const Segment &topSegment) const {
   Segment::setClippingRect(0, 0);             // disable clipping for overlays
 }
 
-void WS2812FX::show() {
+void WS2812FX::show(bool skipOutput) {
   if (!_pixels) {
     DEBUGFX_PRINTLN(F("Error: no _pixels!"));
     errorFlag = ERR_NORAM;
@@ -1757,6 +1804,17 @@ void WS2812FX::show() {
   // avoid race condition, capture _callback value
   show_callback callback = _callback;
   if (callback) callback(); // will call setPixelColor or setRealtimePixelColor
+
+  if (skipOutput) {
+    p_free(_pixelCCT);
+    _pixelCCT = nullptr;
+    if (diff > 0) {
+      size_t fpsCurr = (1000 << FPS_CALC_SHIFT) / diff; // fixed point math
+      _cumulativeFps = (FPS_CALC_AVG * _cumulativeFps + fpsCurr + FPS_CALC_AVG / 2) / (FPS_CALC_AVG + 1);
+      _lastShow = showNow;
+    }
+    return;
+  }
 
   // paint actual pixels
   int oldCCT = Bus::getCCT(); // store original CCT value (since it is global)

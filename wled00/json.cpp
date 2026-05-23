@@ -419,6 +419,10 @@ bool deserializeState(JsonObject root, byte callMode, byte presetId)
   tr = root[F("tb")] | -1;
   if (tr >= 0) strip.timebase = (unsigned long)tr - millis();
 
+#ifdef WLED_ENABLE_CAPTURE_MODE
+  strip.deserializeCapture(root[F("capture")]);
+#endif
+
   JsonObject nl       = root["nl"];
   if (!nl.isNull()) stateChanged = true;
   nightlightActive    = getBoolVal(nl["on"], nightlightActive);
@@ -778,6 +782,10 @@ void serializeInfo(JsonObject root)
   root[F("ws")] = ws.count();
   #else
   root[F("ws")] = -1;
+  #endif
+
+  #ifdef WLED_ENABLE_CAPTURE_MODE
+  root[F("capture")] = true;
   #endif
 
   root[F("fxcount")] = strip.getModeCount();

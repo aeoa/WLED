@@ -244,6 +244,20 @@ static bool sendLiveLedsWs(uint32_t wsClient)
 
 void handleWs()
 {
+#ifdef WLED_ENABLE_CAPTURE_MODE
+  if (strip.isCaptureMode()) {
+    #ifdef ESP8266
+    ws.cleanupClients(3);
+    #else
+    ws.cleanupClients();
+    #endif
+    if (wsLiveClientId && strip.isCaptureFrameReady() && sendLiveLedsWs(wsLiveClientId)) {
+      strip.clearCaptureFrameReady();
+    }
+    return;
+  }
+#endif
+
   if (millis() - wsLastLiveTime > WS_LIVE_INTERVAL)
   {
     #ifdef ESP8266

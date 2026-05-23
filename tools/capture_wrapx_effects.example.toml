@@ -1,0 +1,215 @@
+# Effects are ordered roughly by wrap-X showcase quality.
+# Comment out whole [[effects]] blocks while iterating on individual captures.
+
+[[effects]]
+id = 121
+name = "Blobs"
+
+[[effects]]
+id = 119
+name = "Crazy Bees"
+
+[[effects]]
+id = 124
+name = "Distortion Waves"
+
+[[effects]]
+id = 180
+name = "Hiphotic"
+seg = { pal = 4 }
+
+[[effects]]
+id = 127
+name = "Waving Cell"
+
+[[effects]]
+id = 150
+name = "Squared Swirl"
+
+[[effects]]
+id = 175
+name = "Swirl"
+
+[[effects]]
+id = 125
+name = "Soap"
+
+[[effects]]
+id = 190
+name = "PS Vortex"
+
+[[effects]]
+id = 199
+name = "PS GEQ Nova"
+
+[[effects]]
+id = 193
+name = "PS Box"
+
+[[effects]]
+id = 200
+name = "PS Ghost Rider"
+
+[[effects]]
+id = 217
+name = "PS Galaxy"
+
+[[effects]]
+id = 192
+name = "PS Ballpit"
+
+[[effects]]
+id = 191
+name = "PS Fuzzy Noise"
+
+[[effects]]
+id = 195
+name = "PS Impact"
+
+[[effects]]
+id = 197
+name = "PS Spray"
+
+[[effects]]
+id = 201
+name = "PS Blobs"
+
+[[effects]]
+id = 188
+name = "PS Fire"
+
+[[effects]]
+id = 189
+name = "PS Fireworks"
+
+[[effects]]
+id = 154
+name = "Metaballs"
+
+[[effects]]
+id = 178
+name = "Plasma Ball"
+
+[[effects]]
+id = 167
+name = "Colored Bursts"
+
+[[effects]]
+id = 146
+name = "Noise2D"
+
+[[effects]]
+id = 149
+name = "Firenoise"
+
+[[effects]]
+id = 174
+name = "Polar Lights"
+
+[[effects]]
+id = 173
+name = "Tartan"
+
+[[effects]]
+id = 176
+name = "Lissajous"
+
+[[effects]]
+id = 177
+name = "Frizzles"
+
+[[effects]]
+id = 181
+name = "Sindots"
+
+[[effects]]
+id = 152
+name = "DNA"
+
+[[effects]]
+id = 187
+name = "PS Volcano"
+
+[[effects]]
+id = 194
+name = "PS Attractor"
+
+[[effects]]
+id = 198
+name = "PS GEQ 2D"
+
+[[effects]]
+id = 196
+name = "PS Waterfall"
+
+[[effects]]
+id = 120
+name = "Ghost Rider"
+
+[[effects]]
+id = 118
+name = "Spaceships"
+
+[[effects]]
+id = 114
+name = "Rotozoomer"
+
+[[effects]]
+id = 165
+name = "Waverly"
+
+[[effects]]
+id = 162
+name = "Pulser"
+
+[[effects]]
+id = 172
+name = "Game Of Life"
+
+[[effects]]
+id = 126
+name = "Octopus"
+
+[[effects]]
+id = 123
+name = "Drift Rose"
+
+[[effects]]
+id = 164
+name = "Drift"
+
+[[effects]]
+id = 182
+name = "DNA Spiral"
+
+[[effects]]
+id = 183
+name = "Black Hole"
+
+[[effects]]
+id = 153
+name = "Matrix"
+
+[[effects]]
+id = 122
+name = "Scrolling Text"
+
+[[effects]]
+id = 139
+name = "GEQ"
+
+[[effects]]
+id = 160
+name = "Funky Plank"
+
+[[effects]]
+id = 166
+name = "Sun Radiation"
+
+[[effects]]
+id = 168
+name = "Julia"
+
+[[effects]]
+id = 186
+name = "Akemi"

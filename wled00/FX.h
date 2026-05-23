@@ -849,6 +849,15 @@ class WS2812FX {
       _isOffRefreshRequired(false),
       _hasWhiteChannel(false),
       _triggered(false),
+#ifdef WLED_ENABLE_CAPTURE_MODE
+      _captureMode(false),
+      _captureStepMode(true),
+      _captureSkipOutput(true),
+      _captureFrameRequested(false),
+      _captureFrameReady(false),
+      _captureFrameMs(FRAMETIME_FIXED),
+      _captureFrame(0),
+#endif
       _segment_index(0),
       _mainSegment(0),
       _modeCount(MODE_COUNT),
@@ -891,7 +900,7 @@ class WS2812FX {
       makeAutoSegments(bool forceReset = false),  // will create segments based on configured outputs
       fixInvalidSegments(),                       // fixes incorrect segment configuration
       blendSegment(const Segment &topSegment) const,    // blends topSegment into pixels
-      show(),                                     // initiates LED output
+      show(bool skipOutput = false),              // initiates LED output
       setTargetFps(unsigned fps),
       setupEffectData(),                          // add default effects to the list; defined in FX.cpp
       waitForIt();                                // wait until frame is over (service() has finished or time for 1 frame has passed)
@@ -955,6 +964,14 @@ class WS2812FX {
     };
 
     unsigned long now, timebase;
+
+#ifdef WLED_ENABLE_CAPTURE_MODE
+    void deserializeCapture(JsonObject capture);
+    inline bool isCaptureMode() const             { return _captureMode; }
+    inline bool isCaptureFrameReady() const       { return _captureFrameReady; }
+    inline void clearCaptureFrameReady()          { _captureFrameReady = false; }
+#endif
+
     inline uint32_t getPixelColor(unsigned n) const { return (getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0; } // returns color of pixel n, black if out of (mapped) bounds
     inline uint32_t getPixelColorNoMap(unsigned n) const { return (n < getLengthTotal()) ? _pixels[n] : 0; } // ignores mapping table
     inline uint32_t getLastShow() const             { return _lastShow; }                 // returns millis() timestamp of last strip.show() call
@@ -1035,6 +1052,18 @@ class WS2812FX {
       bool _hasWhiteChannel      : 1;
       bool _triggered            : 1;
     };
+
+#ifdef WLED_ENABLE_CAPTURE_MODE
+    struct {
+      bool _captureMode           : 1;
+      bool _captureStepMode       : 1;
+      bool _captureSkipOutput     : 1;
+      bool _captureFrameRequested : 1;
+      bool _captureFrameReady     : 1;
+    };
+    uint16_t _captureFrameMs;
+    uint32_t _captureFrame;
+#endif
 
     uint8_t _segment_index;
     uint8_t _mainSegment;
