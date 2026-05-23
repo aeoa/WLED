@@ -5250,10 +5250,16 @@ void mode_2Ddna(void) {         // dna originally by by ldirko at https://pasteb
   const int cols = SEG_W;
   const int rows = SEG_H;
 
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint8_t xHalfCycles = wrapX ? uint8_t(max(1, (cols + 16) / 32)) : 0; // nearest original i*4 half-cycle count
+
   SEGMENT.fadeToBlackBy(64);
   for (int i = 0; i < cols; i++) {
-    SEGMENT.setPixelColorXY(i, beatsin8_t(SEGMENT.speed/8, 0, rows-1, 0, i*4    ), ColorFromPalette(SEGPALETTE, i*5+strip.now/17, beatsin8_t(5, 55, 255, 0, i*10), LINEARBLEND));
-    SEGMENT.setPixelColorXY(i, beatsin8_t(SEGMENT.speed/8, 0, rows-1, 0, i*4+128), ColorFromPalette(SEGPALETTE, i*5+128+strip.now/17, beatsin8_t(5, 55, 255, 0, i*10+128), LINEARBLEND));
+    const uint8_t xPhase = wrapX ? uint8_t((uint32_t)i * xHalfCycles * 128U / cols) : uint8_t(i * 4);
+    const uint8_t briPhase = wrapX ? xPhase : uint8_t(i * 10);
+    const uint8_t hue = wrapX ? xPhase : uint8_t(i * 5);
+    SEGMENT.setPixelColorXY(i, beatsin8_t(SEGMENT.speed/8, 0, rows-1, 0, xPhase    ), ColorFromPalette(SEGPALETTE, hue+strip.now/17, beatsin8_t(5, 55, 255, 0, briPhase), LINEARBLEND));
+    SEGMENT.setPixelColorXY(i, beatsin8_t(SEGMENT.speed/8, 0, rows-1, 0, xPhase+128), ColorFromPalette(SEGPALETTE, hue+128+strip.now/17, beatsin8_t(5, 55, 255, 0, briPhase+128), LINEARBLEND));
   }
   SEGMENT.blur(SEGMENT.intensity / (8 - (SEGMENT.check1 * 2)), SEGMENT.check1);
 } // mode_2Ddna()
@@ -5379,8 +5385,12 @@ void mode_2DFrizzles(void) {                 // By: Stepko https://editor.soulma
   const int rows = SEG_H;
 
   SEGMENT.fadeToBlackBy(16 + SEGMENT.check1 * 10);
+  const bool wrapX = SEGMENT.wrap_x;
   for (size_t i = 8; i > 0; i--) {
-    SEGMENT.addPixelColorXY(beatsin8_t(SEGMENT.speed/8 + i, 0, cols - 1),
+    const uint16_t xBpm = SEGMENT.speed/8 + i;
+    const int x = wrapX ? ((uint32_t)beat16(xBpm, i * 8192) * cols) >> 16
+                        : beatsin8_t(xBpm, 0, cols - 1);
+    SEGMENT.addPixelColorXY(x,
                             beatsin8_t(SEGMENT.intensity/8 - i, 0, rows - 1),
                             ColorFromPalette(SEGPALETTE, beatsin8_t(12, 0, 255), 255, LINEARBLEND));
   }
@@ -5703,16 +5713,17 @@ void mode_2DLissajous(void) {            // By: Andrew Tuline
 
   SEGMENT.fadeToBlackBy(SEGMENT.intensity);
   uint_fast16_t phase = (strip.now * (1 + SEGENV.custom3)) /32;  // allow user to control rotation speed
+  const bool wrapX = SEGMENT.wrap_x;
 
   //for (int i=0; i < 4*(cols+rows); i ++) {
   for (int i=0; i < 256; i ++) {
     //float xlocn = float(sin8_t(now/4+i*(SEGMENT.speed>>5))) / 255.0f;
     //float ylocn = float(cos8_t(now/4+i*2)) / 255.0f;
-    uint_fast8_t xlocn = sin8_t(phase/2 + (i*SEGMENT.speed)/32);
-    uint_fast8_t ylocn = cos8_t(phase/2 + i*2);
-    xlocn = (cols < 2) ? 1 : (map(2*xlocn, 0,511, 0,2*(cols-1)) +1) /2;    // softhack007: "(2* ..... +1) /2" for proper rounding
-    ylocn = (rows < 2) ? 1 : (map(2*ylocn, 0,511, 0,2*(rows-1)) +1) /2;    // "rows > 1" is needed to avoid div/0 in map()
-    SEGMENT.setPixelColorXY((uint8_t)xlocn, (uint8_t)ylocn, SEGMENT.color_from_palette(strip.now/100+i, false, PALETTE_SOLID_WRAP, 0));
+    const uint_fast8_t xWave = wrapX ? uint8_t(phase/2 + i) : sin8_t(phase/2 + (i*SEGMENT.speed)/32);
+    const uint_fast8_t yWave = cos8_t(phase/2 + (wrapX ? (i*SEGMENT.speed)/32 : i*2));
+    int xlocn = (cols < 2) ? 1 : (wrapX ? ((uint16_t)xWave * cols) >> 8 : (map(2*xWave, 0,511, 0,2*(cols-1)) +1) /2);    // softhack007: "(2* ..... +1) /2" for proper rounding
+    int ylocn = (rows < 2) ? 1 : (map(2*yWave, 0,511, 0,2*(rows-1)) +1) /2;    // "rows > 1" is needed to avoid div/0 in map()
+    SEGMENT.setPixelColorXY(xlocn, ylocn, SEGMENT.color_from_palette(strip.now/100+i, false, PALETTE_SOLID_WRAP, 0));
   }
   SEGMENT.blur(SEGMENT.custom1 >> (1 + SEGMENT.check1 * 3), SEGMENT.check1);
 } // mode_2DLissajous()
@@ -6015,8 +6026,10 @@ void mode_2DSindots(void) {                             // By: ldirko   https://
 
   byte t1 = strip.now / (257 - SEGMENT.speed); // 20;
   byte t2 = sin8_t(t1) / 4 * 2;
+  const bool wrapX = SEGMENT.wrap_x;
   for (int i = 0; i < 13; i++) {
-    int x = sin8_t(t1 + i * SEGMENT.intensity/8)*(cols-1)/255;  // max index now 255x15/255=15!
+    const uint8_t phase = t1 + i * SEGMENT.intensity/8;
+    int x = wrapX ? ((uint16_t)phase * cols) >> 8 : sin8_t(phase)*(cols-1)/255;  // max index now 255x15/255=15!
     int y = sin8_t(t2 + i * SEGMENT.intensity/8)*(rows-1)/255;  // max index now 255x15/255=15!
     SEGMENT.setPixelColorXY(x, y, ColorFromPalette(SEGPALETTE, i * 255 / 13, 255, LINEARBLEND));
   }
@@ -6042,9 +6055,13 @@ void mode_2Dsquaredswirl(void) {            // By: Mark Kriegsman. https://gist.
   SEGMENT.blur(SEGMENT.custom3>>1);
 
   // Use two out-of-sync sine waves
-  int i = beatsin8_t(19, kBorderWidth, cols-kBorderWidth);
-  int j = beatsin8_t(22, kBorderWidth, cols-kBorderWidth);
-  int k = beatsin8_t(17, kBorderWidth, cols-kBorderWidth);
+  const bool wrapX = SEGMENT.wrap_x;
+  auto xPos = [cols, wrapX, kBorderWidth](uint16_t bpm, uint16_t timebase) -> int {
+    return wrapX ? ((uint32_t)beat16(bpm, timebase) * cols) >> 16 : beatsin8_t(bpm, kBorderWidth, cols-kBorderWidth);
+  };
+  int i = xPos(19, 0);
+  int j = xPos(22, 21845);
+  int k = xPos(17, 43690);
   int m = beatsin8_t(18, kBorderWidth, rows-kBorderWidth);
   int n = beatsin8_t(15, kBorderWidth, rows-kBorderWidth);
   int p = beatsin8_t(20, kBorderWidth, rows-kBorderWidth);
@@ -6883,17 +6900,23 @@ void mode_2DSwirl(void) {
 
   SEGMENT.blur(SEGMENT.custom1);
 
-  int  i = beatsin8_t( 27*SEGMENT.speed/255, borderWidth, cols - borderWidth);
-  int  j = beatsin8_t( 41*SEGMENT.speed/255, borderWidth, rows - borderWidth);
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t rawBpm1 = 27U * SEGMENT.speed / 255U;
+  const uint16_t rawBpm2 = 41U * SEGMENT.speed / 255U;
+  const uint16_t wrapBpm1 = rawBpm1 ? rawBpm1 : 1;
+  const uint16_t wrapBpm2 = rawBpm2 ? rawBpm2 : 1;
+  int  i = wrapX ? ((uint32_t)beat16(wrapBpm1) * cols) >> 16 : beatsin8_t(rawBpm1, borderWidth, cols - borderWidth);
+  int  j = beatsin8_t(rawBpm2, borderWidth, rows - borderWidth);
+  int ix = wrapX ? ((uint32_t)beat16(wrapBpm2, 21845) * cols) >> 16 : j;
   int ni = (cols - 1) - i;
-  int nj = (cols - 1) - j;
+  int nj = (cols - 1) - ix;
 
   um_data_t *um_data = getAudioData();
   float volumeSmth  = *(float*)   um_data->u_data[0]; //ewowi: use instead of sampleAvg???
   int   volumeRaw   = *(int16_t*) um_data->u_data[1];
 
   SEGMENT.addPixelColorXY( i, j, ColorFromPalette(SEGPALETTE, (strip.now / 11 + volumeSmth*4), volumeRaw * SEGMENT.intensity / 64, LINEARBLEND)); //CHSV( ms / 11, 200, 255);
-  SEGMENT.addPixelColorXY( j, i, ColorFromPalette(SEGPALETTE, (strip.now / 13 + volumeSmth*4), volumeRaw * SEGMENT.intensity / 64, LINEARBLEND)); //CHSV( ms / 13, 200, 255);
+  SEGMENT.addPixelColorXY(ix, i, ColorFromPalette(SEGPALETTE, (strip.now / 13 + volumeSmth*4), volumeRaw * SEGMENT.intensity / 64, LINEARBLEND)); //CHSV( ms / 13, 200, 255);
   SEGMENT.addPixelColorXY(ni,nj, ColorFromPalette(SEGPALETTE, (strip.now / 17 + volumeSmth*4), volumeRaw * SEGMENT.intensity / 64, LINEARBLEND)); //CHSV( ms / 17, 200, 255);
   SEGMENT.addPixelColorXY(nj,ni, ColorFromPalette(SEGPALETTE, (strip.now / 29 + volumeSmth*4), volumeRaw * SEGMENT.intensity / 64, LINEARBLEND)); //CHSV( ms / 29, 200, 255);
   SEGMENT.addPixelColorXY( i,nj, ColorFromPalette(SEGPALETTE, (strip.now / 37 + volumeSmth*4), volumeRaw * SEGMENT.intensity / 64, LINEARBLEND)); //CHSV( ms / 37, 200, 255);
@@ -6918,8 +6941,11 @@ void mode_2DWaverly(void) {
   SEGMENT.fadeToBlackBy(SEGMENT.speed);
 
   long t = strip.now / 2;
+  const bool wrapX = SEGMENT.wrap_x;
+  const uint16_t xPeriod = cols * 45U;
   for (int i = 0; i < cols; i++) {
-    unsigned thisVal = (1 + SEGMENT.intensity/64) * perlin8(i * 45 , t , t)/2;
+    const uint16_t xNoise = i * 45U;
+    unsigned thisVal = (1 + SEGMENT.intensity/64) * (wrapX ? perlin8_periodicX(xNoise, xPeriod, t, t) : perlin8(xNoise, t, t))/2;
     // use audio if available
     if (um_data) {
       thisVal /= 32; // reduce intensity of perlin8()
