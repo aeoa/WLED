@@ -73,6 +73,10 @@
 
 #define indexToVStrip(index, stripNr) ((index) | (int((stripNr)+1)<<16))
 
+static inline uint32_t effectMicros() {
+  return strip.now * 1000UL;
+}
+
 // a few constants needed for AudioReactive effects
 // for 22Khz sampling
 #define MAX_FREQUENCY   11025    // sample frequency / 2 (as per Nyquist criterion)
@@ -7125,7 +7129,7 @@ void mode_matripix(void) {                  // Matripix. By Andrew Tuline.
     for (unsigned i = 0; i < SEGLEN; i++) pixels[i] = BLACK;   // may not be needed as resetIfRequired() clears buffer
   }
 
-  uint8_t secondHand = micros()/(256-SEGMENT.speed)/500 % 16;
+  uint8_t secondHand = effectMicros()/(256-SEGMENT.speed)/500 % 16;
   if(SEGENV.aux0 != secondHand) {
     SEGENV.aux0 = secondHand;
 
@@ -7189,7 +7193,7 @@ void mode_noisefire(void) {                 // Noisefire. By Andrew Tuline.
   if (SEGENV.call == 0) SEGMENT.fill(BLACK);
 
   for (unsigned i = 0; i < SEGLEN; i++) {
-    unsigned index = perlin8(i*SEGMENT.speed/64,strip.now*SEGMENT.speed/64*SEGLEN/255);  // X location is constant, but we move along the Y at the rate of millis(). By Andrew Tuline.
+    unsigned index = perlin8(i*SEGMENT.speed/64,strip.now*SEGMENT.speed/64*SEGLEN/255);  // X location is constant, but we move along the Y with the effect clock. By Andrew Tuline.
     index = (255 - i*256/SEGLEN) * index/(256-SEGMENT.intensity);                       // Now we need to scale index so that it gets blacker as we get close to one of the ends.
                                                                                         // This is a simple y=mx+b equation that's been scaled. index/128 is another scaling.
 
@@ -7242,7 +7246,7 @@ void mode_pixelwave(void) {                 // Pixelwave. By Andrew Tuline.
   um_data_t *um_data = getAudioData();
   int volumeRaw    = *(int16_t*)um_data->u_data[1];
 
-  uint8_t secondHand = micros()/(256-SEGMENT.speed)/500+1 % 16;
+  uint8_t secondHand = effectMicros()/(256-SEGMENT.speed)/500+1 % 16;
   if (SEGENV.aux0 != secondHand) {
     SEGENV.aux0 = secondHand;
 
@@ -7411,8 +7415,8 @@ void mode_DJLight(void) {                   // Written by ??? Adapted by Will Ta
     SEGMENT.fill(BLACK);
   }
 
-  uint8_t secondHand = micros()/(256-SEGMENT.speed)/500+1 % 64;
-  if (SEGENV.aux0 != secondHand) {                        // Triggered millis timing.
+  uint8_t secondHand = effectMicros()/(256-SEGMENT.speed)/500+1 % 64;
+  if (SEGENV.aux0 != secondHand) {                        // Triggered effect-clock timing.
     SEGENV.aux0 = secondHand;
 
     CRGB color = CRGB(fftResult[15]/2, fftResult[5]/2, fftResult[0]/2); // 16-> 15 as 16 is out of bounds
@@ -7470,7 +7474,7 @@ void mode_freqmatrix(void) {                // Freqmatrix. By Andreas Pleschung.
     SEGMENT.fill(BLACK);
   }
 
-  uint8_t secondHand = micros()/(256-SEGMENT.speed)/500 % 16;
+  uint8_t secondHand = effectMicros()/(256-SEGMENT.speed)/500 % 16;
   if(SEGENV.aux0 != secondHand) {
     SEGENV.aux0 = secondHand;
 
@@ -7564,7 +7568,7 @@ void mode_freqwave(void) {                  // Freqwave. By Andreas Pleschung.
     SEGMENT.fill(BLACK);
   }
 
-  uint8_t secondHand = micros()/(256-SEGMENT.speed)/500 % 16;
+  uint8_t secondHand = effectMicros()/(256-SEGMENT.speed)/500 % 16;
   if(SEGENV.aux0 != secondHand) {
     SEGENV.aux0 = secondHand;
 
@@ -7683,8 +7687,8 @@ void mode_waterfall(void) {                   // Waterfall. By: Andrew Tuline
   *binNum = SEGMENT.custom1;                              // Select a bin.
   *maxVol = SEGMENT.custom2 / 2;                          // Our volume comparator.
 
-  uint8_t secondHand = micros() / (256-SEGMENT.speed)/500 + 1 % 16;
-  if (SEGENV.aux0 != secondHand) {                        // Triggered millis timing.
+  uint8_t secondHand = effectMicros() / (256-SEGMENT.speed)/500 + 1 % 16;
+  if (SEGENV.aux0 != secondHand) {                        // Triggered effect-clock timing.
     SEGENV.aux0 = secondHand;
 
     //uint8_t pixCol = (log10f((float)FFT_MajorPeak) - 2.26f) * 177;  // 10Khz sampling - log10 frequency range is from 2.26 (182hz) to 3.7 (5012hz). Let's scale accordingly.
@@ -7793,8 +7797,8 @@ void mode_2DFunkyPlank(void) {              // Written by ??? Adapted by Will Ta
     SEGMENT.fill(BLACK);
   }
 
-  uint8_t secondHand = micros()/(256-SEGMENT.speed)/500+1 % 64;
-  if (SEGENV.aux0 != secondHand) {                        // Triggered millis timing.
+  uint8_t secondHand = effectMicros()/(256-SEGMENT.speed)/500+1 % 64;
+  if (SEGENV.aux0 != secondHand) {                        // Triggered effect-clock timing.
     SEGENV.aux0 = secondHand;
 
     // display values of

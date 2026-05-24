@@ -505,9 +505,9 @@ uint16_t crc16(const unsigned char* data_p, size_t length) {
 
 // Generates a 16-bit "sawtooth" wave at a given BPM, with BPM specified in Q8.8 fixed-point format:
 // for 120 BPM it would be 120*256 = 30720. If you just want to specify "120", use beat16() or beat8().
-// timebase is the time offset of the wave from the millis() timer
+// timebase is the time offset of the wave from the effect clock
 uint16_t beat88(uint16_t beats_per_minute_88, uint32_t timebase) {
-  return ((millis() - timebase) * beats_per_minute_88 * 280) >> 16;
+  return ((strip.now - timebase) * beats_per_minute_88 * 280) >> 16;
 }
 
 // Generates a 16-bit "sawtooth" wave at a given BPM
@@ -604,7 +604,7 @@ um_data_t* simulateSound(uint8_t simulationId)
     fftResult =  (uint8_t*)um_data->u_data[2];
   }
 
-  uint32_t ms = millis();
+  uint32_t ms = strip.now;
 
   switch (simulationId) {
     default:
