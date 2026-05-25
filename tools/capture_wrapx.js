@@ -82,6 +82,7 @@ Options:
   --ffmpeg <path>   ffmpeg executable (default: ffmpeg)
   --encode-jobs <n> Concurrent ffmpeg jobs per effect (default: 2)
   --combined <name> Combined comparison video name (default: all-effects-compare.mp4)
+  --resume          Skip effects already completed in capture-performance.csv
 
 The target firmware must report capture support through /json/info. Build with
 -D WLED_ENABLE_CAPTURE_MODE before using this tool.
@@ -103,7 +104,8 @@ function parseArgs(argv) {
     font: findDefaultFont(),
     ffmpeg: 'ffmpeg',
     'encode-jobs': 2,
-    combined: 'all-effects-compare.mp4'
+    combined: 'all-effects-compare.mp4',
+    resume: false
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -112,6 +114,10 @@ function parseArgs(argv) {
     if (key === '--help' || key === '-h') {
       usage();
       process.exit(0);
+    }
+    if (key === '--resume') {
+      args.resume = true;
+      continue;
     }
     if (!key.startsWith('--') || next === undefined) throw new Error(`Invalid argument: ${key}`);
     args[key.slice(2)] = next;
@@ -661,6 +667,34 @@ function escapeCsvValue(value) {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+function parseCsvLine(line) {
+  const values = [];
+  let value = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"' && line[i + 1] === '"') {
+        value += '"';
+        i++;
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        value += ch;
+      }
+    } else if (ch === ',') {
+      values.push(value);
+      value = '';
+    } else if (ch === '"') {
+      quoted = true;
+    } else {
+      value += ch;
+    }
+  }
+  values.push(value);
+  return values;
+}
+
 const PERFORMANCE_CSV_HEADERS = [
   'effectId',
   'effectName',
@@ -678,6 +712,28 @@ const PERFORMANCE_CSV_HEADERS = [
 
 function getPerformanceCsvPath(outDir) {
   return path.join(outDir, 'capture-performance.csv');
+}
+
+async function readPerformanceCsv(outDir) {
+  const csvPath = getPerformanceCsvPath(outDir);
+  let text;
+  try {
+    text = await fs.promises.readFile(csvPath, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]);
+  return lines.slice(1).map(line => {
+    const values = parseCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index] ?? '';
+    });
+    return row;
+  });
 }
 
 function createPerformanceCsvWriter(outDir) {
@@ -965,27 +1021,65 @@ function enqueueComparisonVideo({queue, args, title, name, results, progress}) {
   return outPath;
 }
 
+function getResumeState({rows, effects, variants, outDir}) {
+  const completed = new Set();
+  const keptRows = [];
+  const rowsByEffectVariant = new Map();
+
+  for (const row of rows) {
+    if (!row.effectId || !row.variant) continue;
+    rowsByEffectVariant.set(`${row.effectId}:${row.variant}`, row);
+  }
+
+  for (const effect of effects) {
+    if (!Number.isInteger(effect.id)) continue;
+    const name = sanitizeName(effect.name || effect.id);
+    const comparePath = path.join(outDir, `${name}-compare.mp4`);
+    const effectRows = variants.map(variant => rowsByEffectVariant.get(`${effect.id}:${variant.key}`));
+    if (effectRows.every(Boolean) && fs.existsSync(comparePath)) {
+      completed.add(String(effect.id));
+      keptRows.push(...effectRows);
+    }
+  }
+
+  return {completed, rows: keptRows};
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const effects = await loadEffects(args.effects);
   if (!Array.isArray(effects)) throw new Error('Effects file must contain a TOML effects list or JSON array');
   const variants = getCaptureVariants();
+  const resumeState = args.resume ? getResumeState({
+    rows: await readPerformanceCsv(args.out),
+    effects,
+    variants,
+    outDir: args.out
+  }) : {completed: new Set(), rows: []};
+  const remainingEffects = effects.filter(effect => !resumeState.completed.has(String(effect.id)));
   const progress = createProgress([
-    {key: 'init', total: 1},
-    {key: 'record', total: effects.length * variants.length, estimate: true},
-    {key: 'ffmpeg', total: effects.length * (variants.length + 1) + 1}
+    {key: 'init', total: remainingEffects.length ? 1 : 0},
+    {key: 'record', total: remainingEffects.length * variants.length, estimate: true},
+    {key: 'ffmpeg', total: remainingEffects.length * (variants.length + 1) + 1}
   ]);
 
-  const initProgress = progress.start('init', 'initialize capture session');
-  const host = await resolveHost(args.host);
-  await assertCaptureModeAvailable(host);
-  const live = await openLiveWebSocket(host);
-  progress.done(initProgress, 'initialize capture session');
+  let host = null;
+  let live = null;
+  if (remainingEffects.length) {
+    const initProgress = progress.start('init', 'initialize capture session');
+    host = await resolveHost(args.host);
+    await assertCaptureModeAvailable(host);
+    live = await openLiveWebSocket(host);
+    progress.done(initProgress, 'initialize capture session');
+  }
 
   const comparisonClips = [];
   const timestamps = [];
   const performanceCsv = createPerformanceCsvWriter(args.out);
-  await performanceCsv.initialize();
+  await performanceCsv.initialize(resumeState.rows);
+  if (args.resume) {
+    console.log(`Resume: skipping ${resumeState.completed.size} completed effect(s), recording ${remainingEffects.length}`);
+  }
   let activeProcessing = null;
   let processingError = null;
 
@@ -1006,6 +1100,12 @@ async function main() {
       if (!Number.isInteger(effect.id)) throw new Error(`Effect missing numeric id: ${JSON.stringify(effect)}`);
       const name = sanitizeName(effect.name || effect.id);
       const title = `${effect.id} ${effect.name || name}`;
+      if (resumeState.completed.has(String(effect.id))) {
+        console.log(`Skipping ${title} (resume)`);
+        timestamps.push({time: comparisonClips.length * args.seconds, title: `${effect.id} ${effect.name || name}`});
+        comparisonClips.push(path.join(args.out, `${name}-compare.mp4`));
+        continue;
+      }
       console.log(`Capturing ${title}`);
       const results = [];
       let queue = null;
@@ -1084,8 +1184,8 @@ async function main() {
       comparisonClips.push(comparePath);
     }
   } finally {
-    await postJson(host, '/json', {capture: {on: false}, v: false}).catch(() => {});
-    live.ws.close();
+    if (host) await postJson(host, '/json', {capture: {on: false}, v: false}).catch(() => {});
+    if (live) live.ws.close();
   }
 
   await waitForProcessingSlot();
