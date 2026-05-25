@@ -786,6 +786,11 @@ void serializeInfo(JsonObject root)
 
   #ifdef WLED_ENABLE_CAPTURE_MODE
   root[F("capture")] = true;
+  JsonObject captureStats = root.createNestedObject(F("captureStats"));
+  captureStats[F("effectFrames")] = strip.getCaptureEffectFrames();
+  captureStats[F("effectAvgUs")] = strip.getCaptureEffectAvgUs();
+  captureStats[F("effectMinUs")] = strip.getCaptureEffectMinUs();
+  captureStats[F("effectMaxUs")] = strip.getCaptureEffectMaxUs();
   #endif
 
   root[F("fxcount")] = strip.getModeCount();

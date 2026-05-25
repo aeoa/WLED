@@ -857,6 +857,10 @@ class WS2812FX {
       _captureFrameReady(false),
       _captureFrameMs(FRAMETIME_FIXED),
       _captureFrame(0),
+      _captureEffectFrames(0),
+      _captureEffectTotalUs(0),
+      _captureEffectMinUs(UINT32_MAX),
+      _captureEffectMaxUs(0),
 #endif
       _segment_index(0),
       _mainSegment(0),
@@ -970,6 +974,10 @@ class WS2812FX {
     inline bool isCaptureMode() const             { return _captureMode; }
     inline bool isCaptureFrameReady() const       { return _captureFrameReady; }
     inline void clearCaptureFrameReady()          { _captureFrameReady = false; }
+    inline uint32_t getCaptureEffectFrames() const { return _captureEffectFrames; }
+    inline uint32_t getCaptureEffectAvgUs() const  { return _captureEffectFrames ? _captureEffectTotalUs / _captureEffectFrames : 0; }
+    inline uint32_t getCaptureEffectMinUs() const  { return _captureEffectFrames ? _captureEffectMinUs : 0; }
+    inline uint32_t getCaptureEffectMaxUs() const  { return _captureEffectMaxUs; }
 #endif
 
     inline uint32_t getPixelColor(unsigned n) const { return (getMappedPixelIndex(n) < getLengthTotal()) ? _pixels[n] : 0; } // returns color of pixel n, black if out of (mapped) bounds
@@ -1063,6 +1071,10 @@ class WS2812FX {
     };
     uint16_t _captureFrameMs;
     uint32_t _captureFrame;
+    uint32_t _captureEffectFrames;
+    uint64_t _captureEffectTotalUs;
+    uint32_t _captureEffectMinUs;
+    uint32_t _captureEffectMaxUs;
 #endif
 
     uint8_t _segment_index;

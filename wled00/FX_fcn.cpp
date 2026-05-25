@@ -1328,6 +1328,10 @@ void WS2812FX::deserializeCapture(JsonObject capture) {
     _captureFrame = 0;
     _captureFrameReady = false;
     _captureFrameRequested = false;
+    _captureEffectFrames = 0;
+    _captureEffectTotalUs = 0;
+    _captureEffectMinUs = UINT32_MAX;
+    _captureEffectMaxUs = 0;
     restartRuntime();
     resetTimebase();
   }
@@ -1361,6 +1365,9 @@ void WS2812FX::service() {
 
   _isServicing = true;
   bool doShow = _triggered;    // true if ≥1 active segment was processed (and strip was not suspended mid-loop), or trigger received → triggers show()
+#ifdef WLED_ENABLE_CAPTURE_MODE
+  uint32_t captureEffectsUs = 0;
+#endif
   for (size_t i = 0; i < _segments.size(); i++) {
     Segment &seg = _segments[i];
     _segment_index = i;
@@ -1381,6 +1388,13 @@ void WS2812FX::service() {
         seg.beginDraw(prog);                // set up parameters for get/setPixelColor() (will also blend colors and palette if blend style is FADE)
         _currentSegment = &seg;             // set current segment for effect functions (SEGMENT & SEGENV)
         // workaround for on/off transition to respect blending style
+#ifdef WLED_ENABLE_CAPTURE_MODE
+        if (_captureMode) {
+          const uint32_t captureEffectStarted = micros();
+          _mode[seg.mode]();                // run new/current mode (needed for bri workaround)
+          captureEffectsUs += micros() - captureEffectStarted;
+        } else
+#endif
         _mode[seg.mode]();                  // run new/current mode (needed for bri workaround)
         seg.call++;
         // if segment is in transition and no old segment exists we don't need to run the old mode
@@ -1392,6 +1406,13 @@ void WS2812FX::service() {
           segO->beginDraw(prog);            // set up palette & colors (also sets draw dimensions), parent segment has transition progress
           _currentSegment = segO;           // set current segment
           // workaround for on/off transition to respect blending style
+#ifdef WLED_ENABLE_CAPTURE_MODE
+          if (_captureMode) {
+            const uint32_t captureEffectStarted = micros();
+            _mode[segO->mode]();            // run old mode (needed for bri workaround; semaphore!!)
+            captureEffectsUs += micros() - captureEffectStarted;
+          } else
+#endif
           _mode[segO->mode]();              // run old mode (needed for bri workaround; semaphore!!)
           segO->call++;                     // increment old mode run counter
           Segment::modeBlend(false);        // unset flag
@@ -1401,6 +1422,14 @@ void WS2812FX::service() {
   }
   _segment_index = 0;     // segment index is only valid while effects are serviced
   _currentSegment = &_segments[0]; // safe fallback to prevent stale pointer - SEGMENT/SEGENV should not be used outside of the service loop
+#ifdef WLED_ENABLE_CAPTURE_MODE
+  if (_captureMode && doShow) {
+    _captureEffectFrames++;
+    _captureEffectTotalUs += captureEffectsUs;
+    if (captureEffectsUs < _captureEffectMinUs) _captureEffectMinUs = captureEffectsUs;
+    if (captureEffectsUs > _captureEffectMaxUs) _captureEffectMaxUs = captureEffectsUs;
+  }
+#endif
 
   #ifdef WLED_DEBUG
   if ((_targetFps != FPS_UNLIMITED) && (millis() - nowUp > _frametime)) DEBUG_PRINTF_P(PSTR("Slow effects %u/%d.\n"), (unsigned)(millis()-nowUp), (int)_frametime);

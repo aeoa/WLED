@@ -527,6 +527,10 @@ async function captureVariantOnce({host, live, effect, variant, fps, seconds, br
     frames.push(frame.pixels);
   }
   const frameMs = Date.now() - framesStarted;
+  const statsStarted = Date.now();
+  const info = await getJson(host, '/json/info');
+  const statsMs = Date.now() - statsStarted;
+  const captureStats = info.captureStats || null;
 
   return {
     width,
@@ -539,6 +543,8 @@ async function captureVariantOnce({host, live, effect, variant, fps, seconds, br
       totalMs: Date.now() - started,
       frameCount: count,
       effectiveFps: frameMs ? count * 1000 / frameMs : 0,
+      statsMs,
+      captureStats,
       setupParts
     }
   };
@@ -648,6 +654,51 @@ function escapeFilterValue(text) {
 
 function escapeConcatPath(file) {
   return String(file).replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
+}
+
+function escapeCsvValue(value) {
+  const text = value === undefined || value === null ? '' : String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+const PERFORMANCE_CSV_HEADERS = [
+  'effectId',
+  'effectName',
+  'variant',
+  'variantLabel',
+  'requestedFrames',
+  'capturedFrames',
+  'hostFrameMs',
+  'hostEffectiveFps',
+  'effectFrames',
+  'effectAvgUs',
+  'effectMinUs',
+  'effectMaxUs'
+];
+
+function getPerformanceCsvPath(outDir) {
+  return path.join(outDir, 'capture-performance.csv');
+}
+
+function createPerformanceCsvWriter(outDir) {
+  const outPath = getPerformanceCsvPath(outDir);
+  let initialized = false;
+
+  return {
+    outPath,
+    async initialize(rows = []) {
+      await fs.promises.mkdir(outDir, {recursive: true});
+      const body = rows.map(row => PERFORMANCE_CSV_HEADERS.map(header => escapeCsvValue(row[header])).join(','));
+      await fs.promises.writeFile(outPath, `${PERFORMANCE_CSV_HEADERS.join(',')}\n${body.length ? `${body.join('\n')}\n` : ''}`);
+      initialized = true;
+    },
+    async append(row) {
+      if (!initialized) {
+        await this.initialize();
+      }
+      await fs.promises.appendFile(outPath, `${PERFORMANCE_CSV_HEADERS.map(header => escapeCsvValue(row[header])).join(',')}\n`);
+    }
+  };
 }
 
 function formatTimestamp(seconds) {
@@ -933,6 +984,8 @@ async function main() {
 
   const comparisonClips = [];
   const timestamps = [];
+  const performanceCsv = createPerformanceCsvWriter(args.out);
+  await performanceCsv.initialize();
   let activeProcessing = null;
   let processingError = null;
 
@@ -993,7 +1046,23 @@ async function main() {
         const totalMs = Date.now() - variantRecordStarted;
         const timing = rawCapture.timing;
         const setup = timing.setupParts;
-        console.log(`${title}: ${variant.label} recording took ${formatDurationShort(totalMs)} (setup ${formatDurationShort(timing.setupMs)}: solid ${formatDurationShort(setup.solidMs)}, target ${formatDurationShort(setup.targetMs)}, override ${formatDurationShort(setup.overrideMs)}, assert ${formatDurationShort(setup.assertMs)}; settle ${formatDurationShort(timing.settleMs)}, frames ${formatDurationShort(timing.frameMs)} @ ${timing.effectiveFps.toFixed(1)} fps, preview ${formatDurationShort(previewMs)})`);
+        const stats = timing.captureStats;
+        const effectStats = stats ? `, effect ${stats.effectAvgUs}us avg/${stats.effectMinUs}us min/${stats.effectMaxUs}us max over ${stats.effectFrames} frames` : '';
+        console.log(`${title}: ${variant.label} recording took ${formatDurationShort(totalMs)} (setup ${formatDurationShort(timing.setupMs)}: solid ${formatDurationShort(setup.solidMs)}, target ${formatDurationShort(setup.targetMs)}, override ${formatDurationShort(setup.overrideMs)}, assert ${formatDurationShort(setup.assertMs)}; settle ${formatDurationShort(timing.settleMs)}, frames ${formatDurationShort(timing.frameMs)} @ ${timing.effectiveFps.toFixed(1)} fps, stats ${formatDurationShort(timing.statsMs)}, preview ${formatDurationShort(previewMs)}${effectStats})`);
+        await performanceCsv.append({
+          effectId: effect.id,
+          effectName: effect.name || name,
+          variant: variant.key,
+          variantLabel: variant.label,
+          requestedFrames: timing.frameCount,
+          capturedFrames: capture.frames.length,
+          hostFrameMs: timing.frameMs,
+          hostEffectiveFps: timing.effectiveFps.toFixed(2),
+          effectFrames: stats?.effectFrames ?? '',
+          effectAvgUs: stats?.effectAvgUs ?? '',
+          effectMinUs: stats?.effectMinUs ?? '',
+          effectMaxUs: stats?.effectMaxUs ?? ''
+        });
 
         const result = {variant, capture, videoQueued: false};
         results.push(result);
@@ -1020,6 +1089,7 @@ async function main() {
   }
 
   await waitForProcessingSlot();
+  console.log(`Wrote ${performanceCsv.outPath}`);
   const combineProgress = progress.start('ffmpeg', 'combine comparison video');
   await writeCombinedComparison({
     ffmpeg: args.ffmpeg,
