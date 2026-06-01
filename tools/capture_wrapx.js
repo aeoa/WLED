@@ -13,6 +13,8 @@ const path = require('node:path');
 const dns = require('node:dns').promises;
 const { spawn } = require('node:child_process');
 
+const DEFAULT_SEGMENT_COLORS = [[255, 170, 0], [0, 0, 0], [0, 0, 0]];
+
 function waitForEvent(target, event) {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -159,6 +161,48 @@ function findDefaultFont() {
   return candidates.find(font => fs.existsSync(font)) || '';
 }
 
+function normalizeName(value) {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function parseCStringLiteral(value) {
+  return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+}
+
+function findLocalEffectMetadata(effectName) {
+  if (effectName === undefined || effectName === null) return '';
+
+  const fxPath = path.join(__dirname, '..', 'wled00', 'FX.cpp');
+  let source;
+  try {
+    source = fs.readFileSync(fxPath, 'utf8');
+  } catch {
+    return '';
+  }
+
+  const wanted = normalizeName(effectName);
+  const pattern = /static const char\s+_data_[^\n=]+=\s*"((?:\\"|[^"])*)";/g;
+  for (const match of source.matchAll(pattern)) {
+    const metadata = parseCStringLiteral(match[1]);
+    const name = metadata.split('@', 1)[0];
+    if (normalizeName(name) === wanted) return metadata;
+  }
+  return '';
+}
+
+function extractMetadataDefault(metadata, key) {
+  const defaults = metadata.slice(metadata.lastIndexOf(';') + 1);
+  const pattern = new RegExp(`(?:^|,)${key}=(-?\\d+)`);
+  const match = defaults.match(pattern);
+  return match ? Number(match[1]) : null;
+}
+
+function getEffectDefaultPalette(effect) {
+  const metadata = findLocalEffectMetadata(effect.name);
+  const pal = metadata ? extractMetadataDefault(metadata, 'pal') : null;
+  return Number.isInteger(pal) && pal >= 0 && pal <= 255 ? pal : 0;
+}
+
 function formatHost(hostname, port) {
   const host = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
   return port ? `${host}:${port}` : host;
@@ -244,6 +288,7 @@ function parseTomlValue(value, lineNumber) {
   if (value === 'true') return true;
   if (value === 'false') return false;
   if (/^[+-]?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  if (value.startsWith('[') && value.endsWith(']')) return JSON.parse(value);
   if (value.startsWith('{') && value.endsWith('}')) return parseTomlInlineTable(value.slice(1, -1), lineNumber);
   throw new Error(`TOML line ${lineNumber}: unsupported value: ${value}`);
 }
@@ -261,6 +306,7 @@ function parseTomlInlineTable(value, lineNumber) {
 function splitTomlList(value) {
   const parts = [];
   let start = 0;
+  let depth = 0;
   let inString = false;
   let escaped = false;
   for (let i = 0; i < value.length; i++) {
@@ -277,7 +323,15 @@ function splitTomlList(value) {
       inString = !inString;
       continue;
     }
-    if (ch === ',' && !inString) {
+    if (!inString && (ch === '[' || ch === '{')) {
+      depth++;
+      continue;
+    }
+    if (!inString && (ch === ']' || ch === '}')) {
+      depth--;
+      continue;
+    }
+    if (ch === ',' && !inString && depth === 0) {
       const part = value.slice(start, i).trim();
       if (part) parts.push(part);
       start = i + 1;
@@ -454,7 +508,7 @@ async function captureVariantOnce({host, live, effect, variant, fps, seconds, br
   const count = Math.round(fps * seconds);
   const effectState = effect.state || {};
   const seg = Object.assign(
-    {id: 0, fx: effect.id, fxdef: true},
+    {id: 0, fx: effect.id, fxdef: true, pal: getEffectDefaultPalette(effect), col: DEFAULT_SEGMENT_COLORS},
     effectState.seg || {},
     effect.seg || {},
     variant.seg || {}

@@ -4,55 +4,57 @@
 [[effects]]
 id = 121
 name = "Blobs"
+seg = { ix = 255, pal = 55, c1 = 122 }
 
 [[effects]]
 id = 119
 name = "Crazy Bees"
+seg = { sx = 190, ix = 127, o1 = true }
 
 [[effects]]
 id = 124
 name = "Distortion Waves"
+seg = { ix = 60, pal = 35 }
 
 [[effects]]
 id = 180
 name = "Hiphotic"
-seg = { pal = 4 }
+seg = { pal = 4, c3 = 20 }
 
 [[effects]]
 id = 127
 name = "Waving Cell"
+seg = { sx = 25, pal = 4, col = [[255,224,160],[0,0,0],[0,0,0]], c1 = 59, c2 = 28, c3 = 11, o2 = true }
 
 [[effects]]
 id = 150
 name = "Squared Swirl"
+seg = { ix = 0, c3 = 2 }
 
 [[effects]]
 id = 175
 name = "Swirl"
+seg = { ix = 255, c1 = 2 }
 
 [[effects]]
 id = 125
 name = "Soap"
+seg = { sx = 100 }
 
 [[effects]]
 id = 190
 name = "PS Vortex"
-
-[[effects]]
-id = 199
-name = "PS GEQ Nova"
+seg = { sx = 40, c1 = 65 }
 
 [[effects]]
 id = 193
 name = "PS Box"
+seg = { sx = 170, c3 = 10 }
 
 [[effects]]
 id = 200
 name = "PS Ghost Rider"
-
-[[effects]]
-id = 217
-name = "PS Galaxy"
+seg = { sx = 140, ix = 255, pal = 51 }
 
 [[effects]]
 id = 192
@@ -61,6 +63,7 @@ name = "PS Ballpit"
 [[effects]]
 id = 191
 name = "PS Fuzzy Noise"
+seg = { sx = 172, ix = 30, c1 = 124, c2 = 202 }
 
 [[effects]]
 id = 195
@@ -69,6 +72,7 @@ name = "PS Impact"
 [[effects]]
 id = 197
 name = "PS Spray"
+seg = { ix = 14 }
 
 [[effects]]
 id = 201
@@ -77,18 +81,22 @@ name = "PS Blobs"
 [[effects]]
 id = 188
 name = "PS Fire"
+seg = { c2 = 206 }
 
 [[effects]]
 id = 189
 name = "PS Fireworks"
+seg = { sx = 254, ix = 66, o3 = true }
 
 [[effects]]
 id = 154
 name = "Metaballs"
+seg = { sx = 70, pal = 62 }
 
 [[effects]]
 id = 178
 name = "Plasma Ball"
+seg = { pal = 29 }
 
 [[effects]]
 id = 167
@@ -177,39 +185,3 @@ name = "Drift Rose"
 [[effects]]
 id = 164
 name = "Drift"
-
-[[effects]]
-id = 182
-name = "DNA Spiral"
-
-[[effects]]
-id = 183
-name = "Black Hole"
-
-[[effects]]
-id = 153
-name = "Matrix"
-
-[[effects]]
-id = 122
-name = "Scrolling Text"
-
-[[effects]]
-id = 139
-name = "GEQ"
-
-[[effects]]
-id = 160
-name = "Funky Plank"
-
-[[effects]]
-id = 166
-name = "Sun Radiation"
-
-[[effects]]
-id = 168
-name = "Julia"
-
-[[effects]]
-id = 186
-name = "Akemi"
