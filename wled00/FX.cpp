@@ -9434,7 +9434,7 @@ void mode_particlecenterGEQ(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
 
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  PartSys->setWrapX(SEGMENT.wrap_x);
+  PartSys->setWrapX(false);
   numSprays = min(PartSys->numSources, (uint32_t)NUMBEROFSOURCES);
 
   um_data_t *um_data = getAudioData();
@@ -9448,7 +9448,6 @@ void mode_particlecenterGEQ(void) {
 
   uint16_t angleoffset = (uint16_t)0xFFFF / (uint16_t)numSprays;
   uint32_t j = hw_random16(numSprays); // start with random spray so all get a chance to emit a particle if maximum number of particles alive is reached.
-  uint16_t maxFadeLife = 0;
   for (i = 0; i < numSprays; i++) {
     if (SEGMENT.call % (32 - (SEGMENT.custom2 >> 3)) == 0 && SEGMENT.custom2 > 0)
       PartSys->sources[j].source.hue += 1 + (SEGMENT.custom2 >> 4);
@@ -9456,17 +9455,8 @@ void mode_particlecenterGEQ(void) {
     PartSys->sources[j].var = SEGMENT.custom3 >> 2;
     int8_t emitspeed = 5 + (((uint32_t)fftResult[j] * ((uint32_t)SEGMENT.speed + 20)) >> 10); // emit speed according to loudness of band
     uint16_t emitangle = j * angleoffset + SEGENV.aux0;
-    if (SEGMENT.wrap_x) {
-      const uint16_t lifetimeSpeed = emitspeed + PartSys->sources[j].var;
-      uint16_t minLife, maxLife;
-      particleWrapLifeRange(particleWrapLife(PartSys->maxX, lifetimeSpeed, 400), 400, minLife, maxLife);
-      PartSys->sources[j].minLife = minLife;
-      PartSys->sources[j].maxLife = maxLife;
-      maxFadeLife = max(maxFadeLife, maxLife);
-    } else {
-      PartSys->sources[j].minLife = 200;
-      PartSys->sources[j].maxLife = 400;
-    }
+    PartSys->sources[j].minLife = 200;
+    PartSys->sources[j].maxLife = 400;
 
     uint32_t emitparticles = 0;
     if (fftResult[j] > threshold)
@@ -9480,11 +9470,7 @@ void mode_particlecenterGEQ(void) {
 
     j = (j + 1) % numSprays;
   }
-  if (SEGMENT.wrap_x && maxFadeLife) {
-    PartSys->setTtlBrightnessRate(particleTtlBrightnessRate(maxFadeLife));
-  } else {
-    PartSys->setTtlBrightnessRate(2);
-  }
+  PartSys->setTtlBrightnessRate(2);
   PartSys->update(); // update and render
 }
 static const char _data_FX_MODE_PARTICLECIRCULARGEQ[] PROGMEM = "PS GEQ Nova@Speed,Intensity,Rotation Speed,Color Change,Nozzle,,Direction;;!;2f;pal=13,ix=180,c1=0,c2=0,c3=8";
@@ -9665,7 +9651,7 @@ static const char _data_FX_MODE_PARTICLEBLOBS[] PROGMEM = "PS Blobs@Speed,Blobs,
 void mode_particlegalaxy(void) {
   ParticleSystem2D *PartSys = nullptr;
   PSsettings2D sourcesettings;
-  sourcesettings.asByte = 0; // source movement settings
+  sourcesettings.asByte = 0b00001100; // PS settings for bounceY, bounceY used for source movement (it always bounces whereas particles do not)
   if (SEGMENT.call == 0) { // initialization
     if (!initParticleSystem2D(PartSys, 1, 0, true)) // init using 1 source and advanced particle settings
       FX_FALLBACK_STATIC; // allocation failed or not 2D
@@ -9686,12 +9672,6 @@ void mode_particlegalaxy(void) {
     FX_FALLBACK_STATIC; // something went wrong, no data!
   // Particle System settings
   PartSys->updateSystem(); // update system properties (dimensions and data pointers)
-  const bool wrapX = SEGMENT.wrap_x;
-  PartSys->setWrapX(wrapX);
-  PartSys->setBounceX(false);
-  sourcesettings.wrapX = wrapX;
-  sourcesettings.bounceX = !wrapX;
-  sourcesettings.bounceY = true; // source bounces vertically, whereas particles do not
   uint8_t particlesize = SEGMENT.custom1;
   PartSys->setParticleSize(particlesize); // set size globally
   PartSys->setMotionBlur(250 * SEGMENT.check3); // adds trails to single/quad pixel particles, no effect if size > 1
@@ -9722,12 +9702,6 @@ void mode_particlegalaxy(void) {
     if (PartSys->particles[i].ttl == 0) continue; //skip dead particles
     // (dx/dy): vector pointing from particle to center
     int32_t dx = centerx - PartSys->particles[i].x;
-    if (wrapX) {
-      const int32_t circumference = PartSys->maxX + 1;
-      const int32_t halfCircumference = circumference >> 1;
-      if (dx > halfCircumference)       dx -= circumference;
-      else if (dx < -halfCircumference) dx += circumference;
-    }
     int32_t dy = centery - PartSys->particles[i].y;
     //speed towards center:
     int32_t distance = sqrt32_bw(dx * dx + dy * dy); // absolute distance to center
