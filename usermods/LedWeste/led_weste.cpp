@@ -78,9 +78,10 @@ void LedWesteUsermod::mode_blinking_stripe()
     const auto width = SEGMENT.virtualWidth();
     const auto height = SEGMENT.virtualHeight();
 
-    const auto xStart = SEGMENT.custom1;
-    const auto xStop = SEGMENT.custom2;
+    const int xStart = SEGMENT.custom1;
+    const int xStop = SEGMENT.custom2;
     const auto runIn = SEGMENT.custom3;
+    const bool stripeWrapsX = SEGMENT.wrap_x && width > 0 && xStart > xStop;
 
     const auto fg = SEGCOLOR(0);
     const auto bg = SEGCOLOR(1);
@@ -100,34 +101,30 @@ void LedWesteUsermod::mode_blinking_stripe()
 
     SEGENV.step = it; // save previous iteration
 
-    const auto maxDepth = (xStop - xStart) / 2;  // todo: wrap around
+    const auto wrappedDistance = [width](int from, int to) {
+        int distance = (to - from) % width;
+        if (distance < 0) distance += width;
+        return distance;
+    };
+    const int stripeWidth = stripeWrapsX ? wrappedDistance(xStart, xStop) : max(0, xStop - xStart);
+    const int maxDepth = stripeWidth / 2;
     int depth = maxDepth;
     if (runIn > 0) {
         depth = (maxDepth + 1) * rem * 31 / (runIn * onTime);
     }
 
+    SEGMENT.fill(bg);
     if (on)
     {
-        for (int x = 0; x < width; ++x)
+        depth = min(depth, maxDepth);
+        for (int xDepth = 0; xDepth <= depth; ++xDepth)
         {
-            auto c(bg);
-            if ((xStart <= x) ^ (x <= xStop) ^ (xStart <= xStop))
-            {
-                const auto xDistWall = min(abs(x - xStart), abs(xStop - x));
-                if (xDistWall <= depth) {
-                    c = fg;
-                }
-            }
-
             for (int y = 0; y < height; ++y)
             {
-                SEGMENT.setPixelColorXY(x, y, c);
+                SEGMENT.setPixelColorXY(xStart + xDepth, y, fg);
+                SEGMENT.setPixelColorXY(xStop - xDepth, y, fg);
             }
         }
-    }
-    else
-    {
-        SEGMENT.fill(bg);
     }
 }
 
