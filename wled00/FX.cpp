@@ -8961,7 +8961,7 @@ void mode_particlebox(void) {
     if (wrapX && xgravity) {
       const int32_t circumference = PartSys->maxX + 1;
       const int32_t halfCircumference = circumference >> 1;
-      const int32_t lowMeridian = xgravity > 0 ? (circumference * 3) >> 2 : circumference >> 2;
+      const int32_t lowMeridian = xgravity > 0 ? halfCircumference : 0;
       const int32_t gravity = abs(xgravity);
       const int8_t yforce = constrain(ygravity, -127, 127);
       for (i = 0; i < PartSys->usedParticles; i++) {
