@@ -24,7 +24,7 @@ seg = { pal = 4, c3 = 20 }
 [[effects]]
 id = 127
 name = "Waving Cell"
-seg = { sx = 25, pal = 4, col = [[255,224,160],[0,0,0],[0,0,0]], c1 = 59, c2 = 28, c3 = 11, o2 = true }
+seg = { sx = 25, pal = 4, col = [[255,224,160],[0,0,0],[0,0,0]], c1 = 171, c2 = 44, c3 = 11, o2 = true }
 
 [[effects]]
 id = 150
@@ -39,7 +39,7 @@ seg = { ix = 255, c1 = 2 }
 [[effects]]
 id = 125
 name = "Soap"
-seg = { sx = 100 }
+seg = { sx = 30, ix = 26, c1 = 170, wX = true, mi = false }
 
 [[effects]]
 id = 190
