@@ -70,15 +70,6 @@ void LedWesteUsermod::mode_circle()
 const char LedWesteUsermod::mode_blinking_stripe_str[] = "Blinking Stripe@!,Duty cycle,Begin,End,Run-in;!,!;;2;c1=2,c2=7";
 void LedWesteUsermod::mode_blinking_stripe()
 {
-    if (!SEGENV.allocateData(sizeof(uint32_t))) {
-        return;
-    }
-    auto& startTime = *reinterpret_cast<uint32_t*>(SEGENV.data);
-    if (SEGENV.call == 0) {
-        startTime = strip.now;
-    }
-    const auto effectTime = strip.now - startTime;
-
     const auto width = SEGMENT.virtualWidth();
     const auto height = SEGMENT.virtualHeight();
 
@@ -93,17 +84,8 @@ void LedWesteUsermod::mode_blinking_stripe()
     uint32_t cycleTime = (255 - SEGMENT.speed) * 20;
     uint32_t const onTime = FRAMETIME + ((cycleTime * SEGMENT.intensity) >> 8);
     cycleTime += FRAMETIME * 2;
-    uint32_t const it = effectTime / cycleTime;
-    uint32_t const rem = effectTime % cycleTime;
-
-    bool on = SEGMENT.speed == 0; // always on when speed == 0
-    if (it != SEGENV.step         // new iteration, force on state for one frame, even if set time is too brief
-        || rem <= onTime)
-    {
-        on = true;
-    }
-
-    SEGENV.step = it; // save previous iteration
+    uint32_t const rem = strip.now % cycleTime;
+    const bool on = SEGMENT.speed == 0 || rem <= onTime;
 
     const auto wrappedDistance = [width](int from, int to) {
         int distance = (to - from) % width;
