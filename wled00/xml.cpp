@@ -434,6 +434,7 @@ void getSettingsJS(byte subPage, Print& settingsScript)
     printSetFormValue(settingsScript,PSTR("CA"),briS);
 
     printSetFormCheckbox(settingsScript,PSTR("BO"),turnOnAtBoot);
+    printSetFormCheckbox(settingsScript,PSTR("PRB"),restorePresetBri);
     printSetFormValue(settingsScript,PSTR("BP"),bootPreset);
 
     printSetFormCheckbox(settingsScript,PSTR("GB"),gammaCorrectBri);

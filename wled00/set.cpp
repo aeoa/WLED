@@ -372,6 +372,7 @@ void handleSettingsSet(AsyncWebServerRequest *request, byte subPage)
     briS = request->arg(F("CA")).toInt();
 
     turnOnAtBoot = request->hasArg(F("BO"));
+    setRestorePresetBri(request->hasArg(F("PRB")));
     t = request->arg(F("BP")).toInt();
     if (t <= 250) bootPreset = t;
     gammaCorrectBri = request->hasArg(F("GB"));

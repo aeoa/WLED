@@ -631,6 +631,9 @@ WLED_GLOBAL byte bri                 _INIT(briS);          // global brightness 
 WLED_GLOBAL byte briOld              _INIT(0);             // global brightness while in transition loop (previous iteration)
 WLED_GLOBAL byte briT                _INIT(0);             // global brightness during transition
 WLED_GLOBAL byte briLast             _INIT(128);           // brightness before turned off. Used for toggle function
+WLED_GLOBAL byte briBase             _INIT(briS);          // user brightness retained while a preset temporarily overrides brightness
+WLED_GLOBAL bool restorePresetBri    _INIT(false);         // restore briBase when a brightness-less preset follows an override
+WLED_GLOBAL bool presetBriOverride   _INIT(false);         // a preset-supplied brightness is currently overriding briBase
 WLED_GLOBAL byte whiteLast           _INIT(128);           // white channel before turned off. Used for toggle function in ir.cpp
 
 // button

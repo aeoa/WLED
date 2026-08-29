@@ -191,7 +191,7 @@ void applyBri();
 void applyFinalBri();
 void applyValuesToSelectedSegs();
 void colorUpdated(byte callMode);
-void stateUpdated(byte callMode);
+void stateUpdated(byte callMode, bool presetApplying = false);
 void updateInterfaces(uint8_t callMode);
 void handleTransitions();
 void handleNightlight();
@@ -274,6 +274,8 @@ void savePreset(byte index, const char* pname = nullptr, JsonObject saveobj = Js
 inline void saveTemporaryPreset() {savePreset(255);};
 void deletePreset(byte index);
 bool getPresetName(byte index, String& name);
+void setRestorePresetBri(bool enabled);
+void preparePresetBrightness(JsonObject preset);
 
 //remote.cpp
 void handleWiZdata(uint8_t *incomingData, size_t len);

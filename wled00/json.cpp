@@ -372,6 +372,10 @@ static bool deserializeSegment(JsonObject elem, byte it, byte presetId = 0)
 bool deserializeState(JsonObject root, byte callMode, byte presetId)
 {
   bool stateResponse = root[F("v")] | false;
+  bool presetDirect = !root[F("pd")].isNull();
+
+  // The UI may send complete preset content directly instead of loading it asynchronously from the filesystem.
+  if (presetDirect) preparePresetBrightness(root);
 
   #if defined(WLED_DEBUG) && defined(WLED_DEBUG_HOST)
   netDebugEnabled = root[F("debug")] | netDebugEnabled;
@@ -565,7 +569,7 @@ bool deserializeState(JsonObject root, byte callMode, byte presetId)
     //if (restart) forceReconnect = true;
   }
 
-  if (stateChanged) stateUpdated(callMode);
+  if (stateChanged) stateUpdated(callMode, presetId > 0 || presetDirect);
   if (presetToRestore) currentPreset = presetToRestore;
 
   return stateResponse;

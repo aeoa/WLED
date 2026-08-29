@@ -84,7 +84,7 @@ void applyFinalBri() {
 
 //called after every state changes, schedules interface updates, handles brightness transition and nightlight activation
 //unlike colorUpdated(), does NOT apply any colors or FX to segments
-void stateUpdated(byte callMode) {
+void stateUpdated(byte callMode, bool presetApplying) {
   //call for notifier -> 0: init 1: direct change 2: button 3: notification 4: nightlight 5: other (No notification)
   //                     6: fx changed 7: hue 8: preset cycle 9: blynk 10: alexa 11: ws send only 12: button preset
   setValuesFromFirstSelectedSeg();  // a much better approach would be to use main segment: setValuesFromMainSeg()
@@ -114,7 +114,14 @@ void stateUpdated(byte callMode) {
     if (callMode != CALL_MODE_NOTIFICATION) strip.resetTimebase(); //effect start from beginning
   }
 
-  if (bri > 0) briLast = bri;
+  if (restorePresetBri && presetBriOverride && !presetApplying && callMode != CALL_MODE_INIT && callMode != CALL_MODE_NIGHTLIGHT && bri > 0 && bri != briLast) {
+    presetBriOverride = false;
+  }
+
+  if (bri > 0) {
+    briLast = bri;
+    if (!presetBriOverride) briBase = bri;
+  }
 
   //deactivate nightlight if target brightness is reached
   if (bri == nightlightTargetBri && callMode != CALL_MODE_NO_NOTIFY && nightlightMode != NL_MODE_SUN) nightlightActive = false;

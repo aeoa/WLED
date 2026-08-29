@@ -517,6 +517,7 @@ bool deserializeConfig(JsonObject doc, bool fromFS) {
   CJSON(briMultiplier, light[F("scale-bri")]);
   CJSON(paletteBlend, light[F("pal-mode")]);
   CJSON(strip.autoSegments, light[F("aseg")]);
+  setRestorePresetBri(light[F("restore-bri")] | restorePresetBri);
 
   CJSON(gammaCorrectVal, light["gc"]["val"]); // default 2.2
   float light_gc_bri = light["gc"]["bri"] | 1.0f; // default to 1.0 (false)
@@ -1068,6 +1069,7 @@ void serializeConfig(JsonObject root) {
   light[F("scale-bri")] = briMultiplier;
   light[F("pal-mode")] = paletteBlend;
   light[F("aseg")] = strip.autoSegments;
+  light[F("restore-bri")] = restorePresetBri;
 
   JsonObject light_gc = light.createNestedObject("gc");
   light_gc["bri"] = (gammaCorrectBri) ? gammaCorrectVal : 1.0f;  // keep compatibility
