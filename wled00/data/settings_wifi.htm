@@ -301,12 +301,14 @@ Static subnet mask:<br>
 		</div>
 		<div id="ESPNOW">
 			Enable ESP-NOW: <input type="checkbox" name="RE" onchange="tE()"><br>
-			<i>Listen for events over ESP-NOW<br>
+			<i>Listen for events and participate in the ESP-NOW command mesh.<br>
 			Keep disabled if not using a remote or ESP-NOW sync, increases power consumption.<br></i>
 			<div id="rlc">
+				Restrict command mesh to linked MACs: <input type="checkbox" name="EW"><br>
+				<i>Only accept mesh frames from an immediate sender listed below. Configure both directions for a two-way link. This is a topology filter, not authentication.</i><br>
 				Last device seen: <span class="rlid" id="ld">None</span>
 				<button type="button" class="sml" id="+" onclick="aR('RM'+rC,gId('ld').textContent)">+</button><br>
-				Linked MACs (10 max):<br>
+				Linked remote / allowed neighbor MACs (10 max):<br>
 				<div id="rml">
 				</div>
 			</div>

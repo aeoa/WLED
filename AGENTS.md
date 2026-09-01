@@ -245,6 +245,72 @@ No automated linting is configured. Match existing code style in files you edit.
 - Provide references when making analyses or recommendations. Support factual claims with verifiable citations, references or concrete evidence; **never fabricate citations**.
 - **Highlight user-visible breaking changes and ripple effects** during reviews. Ask for confirmation that these were introduced intentionally.
 
+### Synchronizing presets between devices
+
+- A source device is authoritative for preset and playlist **behavior**, but its
+  `presets.json` is not necessarily safe to copy byte-for-byte to other devices.
+- Before synchronizing presets, fetch each target's current `cfg.json` and derive
+  its logical matrix dimensions from `hw.led.matrix.panels`. Segment coordinates
+  in presets (`start`, `stop`, `startY`, and `stopY`) are geometry-dependent.
+- Do not trust a fresh or reset device's current geometry until it has been
+  checked against the intended hardware profile. Configuration is authoritative
+  only after that validation.
+- Never report preset files as correctly synchronized merely because their hashes
+  match. Verify that non-geometric preset data matches the source and that every
+  active segment fits the target's configured matrix.
+- Use `tools/sync_wled_presets.js` for full-matrix preset fleets. It copies the
+  source behavior, adapts full-matrix bounds to each target config, verifies the
+  uploaded result, and refuses ambiguous partial-segment transformations.
+- Pass `--scale-positioned-effects` for the LED-shirt fleet. In addition to the
+  segment bounds, the Light and side-blinker presets use the LedWeste Blinking
+  Stripe effect's Begin/End controls, and the Stop/brake preset uses the Circle
+  effect's Center X/Center Y/Radius controls. These coordinates must be scaled
+  for each logical matrix size; copying them unchanged misplaces the lights.
+- Keep its default no-deletion guard enabled. For this fleet, also pass
+  `--require-preset-id 36`; a live source missing that ID is stale or damaged and
+  must not be propagated.
+
+#### Local LED-shirt test fleet
+
+- Shirt 2 is the definitive source for preset and playlist behavior.
+- Its expected preset IDs are 0-5 and 7-36; preset 6 (`Hiphotic Orange`) was
+  intentionally removed and must not be recreated. Blinker playlist 1 must
+  reference preset 17 (`Blink Left`), and playlist 2 must reference preset 18
+  (`Blink Right`); do not point them at arrow presets 15/16. Playlist 4 must
+  contain 26 unique references, ending with presets 33, 34, 35, and 36; preset
+  10 (`Colortwinkles`) must occur only once. Verify these invariants before
+  every fleet write.
+- Shirts 2 and 5 use the 28x18 matrix profile and the same 504-entry
+  `/2d-gaps.json` (488 physical LEDs and 16 `-1` gaps).
+- Shirts 1, 3, and 4 use the 28x15 matrix profile. Do not copy their
+  geometry-dependent segment bounds or positioned-effect controls to shirts 2
+  or 5, or vice versa.
+- Shirt 0 is a distinct 5 V, 20x11 logical matrix with 196 physical LEDs and a
+  220-entry `/2d-gaps.json` (SHA-256
+  `eebe3c61696550a98a1e40df14cd329b550a62027ed158a746c76b171ddb7a93`).
+  It has two LED buses on GPIO 2 and GPIO 3. Preserve its complete LED routing
+  and electrical configuration: 2500 mA global limit; 1250 mA per-bus limits;
+  and the existing 8 mA/LED and 55 mA/LED estimates. Never clone another
+  shirt's `hw.led` block or gap map onto shirt 0.
+- Shirt 0's normalized panel X positions, in physical bus order, are
+  `[5,10,0,15]`. Its pre-migration mapping was one 5-column panel out of phase;
+  the gap-map rows were rotated left by the same 5 columns so the physical gaps
+  stayed attached to their LEDs. Do not compensate for mapping orientation in
+  presets. After ordinary `--scale-positioned-effects` adaptation, the expected
+  shirt 0 controls are: Light `c1=11,c2=19,wX=false`; Stop/brake
+  `c1=10,c2=11,c3=4`; Blink Left `c1=16,c2=23`; and Blink Right
+  `c1=6,c2=13`.
+- Shirts 1-5 use GPIO 10, a conservative 26 mA/LED estimate, and a 3000 mA
+  global current limit.
+- The LED-shirt fleet uses unrestricted ESP-NOW flooding: set
+  `nw.espnow_restrict` to `false` and keep `nw.linked_remote` empty on every
+  controller. Do not recreate per-node peer whitelists; every node must accept
+  and relay packets from every other reachable node.
+- With this firmware, a partial `/json/cfg` write that omits `hw.led.fps` can
+  reset FPS to the compile-time default. For fleet provisioning, include and
+  verify the target's complete `hw.led` block rather than relying on omitted
+  hardware fields to remain unchanged.
+
 ### Security Hardening
 
 When writing or reviewing code in `wled00/`, `usermods/`, `wled00/data/`, or `.github/workflows/`,
