@@ -95,9 +95,11 @@ void LedWesteUsermod::mode_blinking_stripe()
     const auto fg = SEGCOLOR(0);
     const auto bg = SEGCOLOR(1);
 
-    uint32_t cycleTime = (255 - SEGMENT.speed) * 20;
-    uint32_t const onTime = FRAMETIME + ((cycleTime * SEGMENT.intensity) >> 8);
-    cycleTime += FRAMETIME * 2;
+    const uint32_t variableCycleTime = (255 - SEGMENT.speed) * 20;
+    const uint32_t minimumPhaseTime = FRAMETIME;
+    const uint32_t cycleTime = max(variableCycleTime, minimumPhaseTime * 2U);
+    const uint32_t requestedOnTime = (variableCycleTime * SEGMENT.intensity) >> 8;
+    const uint32_t onTime = constrain(requestedOnTime, minimumPhaseTime, cycleTime - minimumPhaseTime);
     uint32_t const rem = strip.now % cycleTime;
     const bool on = SEGMENT.speed == 0 || rem <= onTime;
 
