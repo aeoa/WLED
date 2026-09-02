@@ -588,7 +588,28 @@ namespace {
     }
   }
 
-  // Sends at most one due retry per loop so QuickESPNow's small queue cannot be overrun.
+  // Sends one native ESP-NOW broadcast without waiting for a completion callback.
+  bool espNowFloodSend(const uint8_t* data, uint8_t length) {
+  #ifdef ARDUINO_ARCH_ESP32
+    if (!esp_now_is_peer_exist(ESPNOW_BROADCAST_ADDRESS)) {
+      esp_now_peer_info_t peer = {};
+      memcpy(peer.peer_addr, ESPNOW_BROADCAST_ADDRESS, ESP_NOW_ETH_ALEN);
+      peer.channel = 0; // Follow the radio's current Wi-Fi channel.
+      peer.ifidx = apActive ? WIFI_IF_AP : WIFI_IF_STA;
+      peer.encrypt = false;
+      const esp_err_t addResult = esp_now_add_peer(&peer);
+      if (addResult != ESP_OK && addResult != ESP_ERR_ESPNOW_EXIST) return false;
+    }
+    // QuickESPNow's asynchronous TX task busy-spins if the SDK loses a send
+    // callback during a radio transition. Native submission is non-blocking and
+    // lets this bounded retry scheduler provide reliability without that failure.
+    return esp_now_send(ESPNOW_BROADCAST_ADDRESS, data, length) == ESP_OK;
+  #else
+    return quickEspNow.send(ESPNOW_BROADCAST_ADDRESS, data, length) == COMMS_SEND_OK;
+  #endif
+  }
+
+  // Sends at most one due retry per loop so the radio queue cannot be overrun.
   void espNowFloodServiceTx() {
     if (statusESPNow != ESP_NOW_STATE_ON) return;
     const uint32_t now = millis();
@@ -610,10 +631,9 @@ namespace {
     const uint32_t senderTime = espNowFloodNetworkMillis();
     espNowFloodAdvanceWallTime(selected->packet, senderTime);
     selected->packet.senderTime = senderTime;
-    const auto error = quickEspNow.send(ESPNOW_BROADCAST_ADDRESS, reinterpret_cast<const uint8_t*>(&selected->packet), selected->length);
-    if (error) {
+    if (!espNowFloodSend(reinterpret_cast<const uint8_t*>(&selected->packet), selected->length)) {
       selected->nextSend = now + ESP_NOW_FLOOD_REPEAT_DELAY_MS;
-      DEBUG_PRINTLN(F("ESP-NOW flood send queue full."));
+      DEBUG_PRINTLN(F("ESP-NOW flood send deferred."));
       return;
     }
     if (--selected->sendsRemaining == 0) selected->active = false;
@@ -694,9 +714,8 @@ void deinitESPNowFlood() {
 }
 
 // Recognizes, strictly validates, and queues a raw ESP-NOW flood frame.
-bool receiveESPNowFloodPacket(const uint8_t* data, uint8_t len, bool broadcast, bool linkedSender) {
+bool receiveESPNowFloodPacket(const uint8_t* data, uint8_t len, bool broadcast) {
   if (!data || len < 2 || data[0] != ESP_NOW_FLOOD_MAGIC_0 || data[1] != ESP_NOW_FLOOD_MAGIC_1) return false;
-  if (espNowFloodRestrictPeers && !linkedSender) return true;
   if (!espNowFloodInitialized || !broadcast || !enableESPNow || !useESPNowSync || len < ESP_NOW_FLOOD_HEADER_SIZE || len > sizeof(EspNowFloodPacket)) return true;
 
   EspNowFloodPacket packet = {};
@@ -754,6 +773,17 @@ bool sendESPNowFloodCommand(JsonObject root) {
   return true;
 }
 
+// Promotes a controller with direct wall time and schedules a fresh beacon immediately.
+void useESPNowFloodLocalTimeSource() {
+  if (!espNowFloodInitialized || !enableESPNow || !useESPNowSync || statusESPNow != ESP_NOW_STATE_ON || !syncGroups || toki.getTimeSource() == TOKI_TS_NONE) return;
+  espNowFloodBecomeTimeMaster();
+  espNowFloodMasterStratum = espNowFloodLocalWallStratum();
+  for (EspNowFloodTx& slot : espNowFloodTx) {
+    if (slot.active && slot.packet.type == ESP_NOW_FLOOD_TYPE_TIME) slot.active = false;
+  }
+  espNowFloodNextTimeSend = millis();
+}
+
 // Applies the pending common effect epoch after a direct command or matching preset load.
 void applyESPNowFloodTimebase(uint8_t presetId) {
   if (!espNowFloodPendingUntil) return;
@@ -781,6 +811,7 @@ void handleESPNowFlood() {
   espNowFloodSendTimeIfDue();
   espNowFloodServiceTx();
 }
+
 // AI: end
 
 #endif

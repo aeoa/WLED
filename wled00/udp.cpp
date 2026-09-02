@@ -937,9 +937,8 @@ void espNowReceiveCB(uint8_t* address, uint8_t* data, uint8_t len, signed int rs
     }
   }
 
-  // The optional neighbor filter checks the immediate relay MAC. Flood frames remain
-  // group-filtered and deduplicated, and unrestricted peers need not be linked.
-  if (receiveESPNowFloodPacket(data, len, broadcast, linkedSender)) return;
+  // Flood frames are group-filtered and deduplicated, but accept every immediate relay.
+  if (receiveESPNowFloodPacket(data, len, broadcast)) return;
   // AI: end
 
   if (!linkedSender) {
