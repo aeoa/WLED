@@ -11,34 +11,64 @@
 /*
  * ESP-NOW semantic command flood.
  *
- * Frames are deliberately compact and contain only the commands used by the remote app.
- * Every participating WLED relays a new frame, while origin/session/sequence deduplication
- * prevents loops. All multi-byte fields are little-endian because every supported ESP target
- * is little-endian. ESP-NOW supplies the per-link frame CRC.
+ * Frames are deliberately compact and contain only the commands and status used by the remote
+ * app. Every participating WLED relays a new frame, while origin/session/sequence deduplication
+ * prevents loops. A destination controls only which nodes apply a command; it never restricts
+ * forwarding, so individually addressed traffic still crosses arbitrary topologies. All
+ * multi-byte fields are little-endian because every supported ESP target is little-endian.
+ * ESP-NOW supplies the per-link frame CRC.
  * Design source: WLED's existing QuickEspNow broadcast transport and sync-group semantics in
  * udp.cpp; the controlled-flood identity, hop limit, retry, and jitter logic is original here.
+ * Protocol and operational details are documented in docs/espnow-flood.md.
  */
 namespace {
   constexpr uint8_t ESP_NOW_FLOOD_MAGIC_0 = 'W';
   constexpr uint8_t ESP_NOW_FLOOD_MAGIC_1 = 'F';
-  constexpr uint8_t ESP_NOW_FLOOD_VERSION = 2;
+  constexpr uint8_t ESP_NOW_FLOOD_VERSION = 5;
   constexpr uint8_t ESP_NOW_FLOOD_TYPE_COMMAND = 1;
   constexpr uint8_t ESP_NOW_FLOOD_TYPE_TIME = 2;
+  constexpr uint8_t ESP_NOW_FLOOD_TYPE_ANNOUNCE = 3;
+  constexpr uint8_t ESP_NOW_FLOOD_TYPE_ACK = 4;
+  constexpr uint8_t ESP_NOW_FLOOD_TYPE_STATE_REQUEST = 5;
+  constexpr uint8_t ESP_NOW_FLOOD_TYPE_STATE_REPLAY = 6;
+  constexpr uint8_t ESP_NOW_FLOOD_TYPE_STATE_ACK = 7;
+  constexpr uint8_t ESP_NOW_FLOOD_DESTINATION_ALL = 0;
+  constexpr uint8_t ESP_NOW_FLOOD_DESTINATION_NODE = 1;
+  constexpr uint8_t ESP_NOW_FLOOD_DESTINATION_GROUP = 2;
   constexpr uint8_t ESP_NOW_FLOOD_COMMAND_PRESET = 0x01;
   constexpr uint8_t ESP_NOW_FLOOD_COMMAND_POWER = 0x02;
   constexpr uint8_t ESP_NOW_FLOOD_COMMAND_BRIGHTNESS = 0x04;
-  constexpr uint8_t ESP_NOW_FLOOD_COMMAND_FLAGS = ESP_NOW_FLOOD_COMMAND_PRESET | ESP_NOW_FLOOD_COMMAND_POWER | ESP_NOW_FLOOD_COMMAND_BRIGHTNESS;
+  constexpr uint8_t ESP_NOW_FLOOD_COMMAND_TRIM = 0x08;
+  constexpr uint8_t ESP_NOW_FLOOD_COMMAND_FLAGS = ESP_NOW_FLOOD_COMMAND_PRESET | ESP_NOW_FLOOD_COMMAND_POWER | ESP_NOW_FLOOD_COMMAND_BRIGHTNESS | ESP_NOW_FLOOD_COMMAND_TRIM;
   constexpr uint8_t ESP_NOW_FLOOD_MAX_HOPS = 32;
   constexpr uint8_t ESP_NOW_FLOOD_COMMAND_REPEATS = 3;
   constexpr uint8_t ESP_NOW_FLOOD_TIME_REPEATS = 2;
-  constexpr uint8_t ESP_NOW_FLOOD_RX_QUEUE_SIZE = 12;
-  constexpr uint8_t ESP_NOW_FLOOD_TX_SLOTS = 4;
-  constexpr uint8_t ESP_NOW_FLOOD_SEEN_SLOTS = 16;
-  constexpr uint8_t ESP_NOW_FLOOD_ORDER_SLOTS = 4;
+  constexpr uint8_t ESP_NOW_FLOOD_ACK_REPEATS = 3;
+  constexpr uint8_t ESP_NOW_FLOOD_ANNOUNCE_REPEATS = 1;
+  #ifdef ARDUINO_ARCH_ESP32
+  constexpr uint8_t ESP_NOW_FLOOD_RX_QUEUE_SIZE = 32;
+  #else
+  constexpr uint8_t ESP_NOW_FLOOD_RX_QUEUE_SIZE = 16;
+  #endif
+  constexpr uint8_t ESP_NOW_FLOOD_TX_SLOTS = 8;
+  constexpr uint8_t ESP_NOW_FLOOD_SEEN_SLOTS = 32;
+  constexpr uint8_t ESP_NOW_FLOOD_ORDER_SLOTS = 8;
   constexpr uint8_t ESP_NOW_FLOOD_APPLY_SLOTS = 8;
+  constexpr uint8_t ESP_NOW_FLOOD_NODE_SLOTS = 16;
+  constexpr uint8_t ESP_NOW_FLOOD_ACK_SLOTS = 32;
+  constexpr uint8_t ESP_NOW_FLOOD_RETAINED_SCOPES = 9;
+  constexpr uint8_t ESP_NOW_FLOOD_STATE_RESPONSE_SLOTS = 4;
   constexpr uint8_t ESP_NOW_FLOOD_STRATUM_NONE = 255;
+  constexpr uint16_t ESP_NOW_FLOOD_TRIM_MIN = 1;
+  constexpr uint16_t ESP_NOW_FLOOD_TRIM_MAX = 400;
   constexpr uint32_t ESP_NOW_FLOOD_REPEAT_DELAY_MS = 24;
   constexpr uint32_t ESP_NOW_FLOOD_TIME_INTERVAL_MS = 5000;
+  constexpr uint32_t ESP_NOW_FLOOD_ANNOUNCE_INTERVAL_MS = 5000;
+  constexpr uint32_t ESP_NOW_FLOOD_NODE_TIMEOUT_MS = 20000;
+  constexpr uint32_t ESP_NOW_FLOOD_ACK_TIMEOUT_MS = 15000;
+  constexpr uint32_t ESP_NOW_FLOOD_STATE_REQUEST_FAST_MS = 1000;
+  constexpr uint32_t ESP_NOW_FLOOD_STATE_REQUEST_SLOW_MS = 5000;
+  constexpr uint8_t ESP_NOW_FLOOD_STATE_REQUEST_FAST_ATTEMPTS = 15;
   constexpr uint32_t ESP_NOW_FLOOD_MASTER_TIMEOUT_MS = 15000;
   constexpr uint32_t ESP_NOW_FLOOD_ELECTION_JITTER_MS = 100;
   constexpr uint32_t ESP_NOW_FLOOD_PENDING_TIMEOUT_MS = 3000;
@@ -52,7 +82,61 @@ namespace {
     uint8_t preset;
     uint8_t brightness;
     uint8_t power;
+    uint16_t trim;
+    uint32_t requestId;
+    uint32_t stateRevision;
   };
+
+  struct __attribute__((packed)) EspNowFloodAnnouncement {
+    uint8_t groups;
+    uint8_t brightness;
+    uint8_t preset;
+    uint8_t playlist;
+    uint16_t trim;
+    char name[33];
+  };
+
+  struct __attribute__((packed)) EspNowFloodAcknowledgement {
+    uint32_t requestId;
+    uint8_t commandOrigin[6];
+    uint32_t commandSession;
+    uint32_t commandSequence;
+    uint8_t appliedFlags;
+    uint8_t brightness;
+    uint8_t preset;
+    uint8_t playlist;
+    uint16_t trim;
+  };
+
+  struct __attribute__((packed)) EspNowFloodStateRequest {
+    uint8_t groups;
+  };
+
+  struct __attribute__((packed)) EspNowFloodRetainedVersion {
+    uint32_t revision;
+    uint32_t effectEpoch;
+    uint8_t origin[6];
+    uint32_t session;
+    uint32_t sequence;
+  };
+
+  struct __attribute__((packed)) EspNowFloodRetainedValue {
+    EspNowFloodRetainedVersion version;
+    uint8_t scopeType;
+    uint8_t scopeGroups;
+    uint8_t value;
+  };
+
+  struct __attribute__((packed)) EspNowFloodStateReplay {
+    uint32_t requestSession;
+    uint8_t flags;
+    EspNowFloodRetainedValue preset;
+    EspNowFloodRetainedValue power;
+    EspNowFloodRetainedValue brightness;
+  };
+
+  constexpr size_t ESP_NOW_FLOOD_STATUS_PAYLOAD_SIZE = sizeof(EspNowFloodAnnouncement) > sizeof(EspNowFloodAcknowledgement) ? sizeof(EspNowFloodAnnouncement) : sizeof(EspNowFloodAcknowledgement);
+  constexpr size_t ESP_NOW_FLOOD_PAYLOAD_SIZE = sizeof(EspNowFloodStateReplay) > ESP_NOW_FLOOD_STATUS_PAYLOAD_SIZE ? sizeof(EspNowFloodStateReplay) : ESP_NOW_FLOOD_STATUS_PAYLOAD_SIZE;
 
   struct __attribute__((packed)) EspNowFloodPacket {
     uint8_t magic[2];
@@ -68,10 +152,12 @@ namespace {
     uint32_t masterSession;
     uint8_t masterOrigin[6];
     uint8_t masterStratum;
-    uint8_t groups;
+    uint8_t destinationType;
+    uint8_t destination[6];
+    uint8_t destinationGroups;
     uint8_t hopsRemaining;
     uint8_t payloadLength;
-    uint8_t payload[sizeof(EspNowFloodCommand)];
+    uint8_t payload[ESP_NOW_FLOOD_PAYLOAD_SIZE];
   };
 
   constexpr size_t ESP_NOW_FLOOD_HEADER_SIZE = offsetof(EspNowFloodPacket, payload);
@@ -90,6 +176,7 @@ namespace {
     uint8_t sendsRemaining;
     uint32_t nextSend;
     uint32_t order;
+    bool relay;
     bool active;
   };
 
@@ -106,6 +193,7 @@ namespace {
     uint32_t presetSequence;
     uint32_t powerSequence;
     uint32_t brightnessSequence;
+    uint32_t trimSequence;
     uint8_t validFlags;
     bool valid;
   };
@@ -114,6 +202,52 @@ namespace {
     EspNowFloodPacket packet;
     uint32_t order;
     bool active;
+  };
+
+  struct EspNowFloodNode {
+    uint8_t origin[6];
+    uint32_t session;
+    uint32_t lastSeen;
+    uint8_t hops;
+    uint8_t groups;
+    uint8_t brightness;
+    uint8_t preset;
+    uint8_t playlist;
+    uint16_t trim;
+    char name[33];
+    bool valid;
+  };
+
+  struct EspNowFloodRetainedField {
+    EspNowFloodRetainedVersion version;
+    uint8_t value;
+    bool valid;
+  };
+
+  struct EspNowFloodRetainedScope {
+    EspNowFloodRetainedField preset;
+    EspNowFloodRetainedField power;
+    EspNowFloodRetainedField brightness;
+  };
+
+  struct EspNowFloodStateResponse {
+    uint8_t destination[6];
+    uint32_t requestSession;
+    uint32_t due;
+    uint8_t groups;
+    bool active;
+  };
+
+  struct EspNowFloodAckRecord {
+    uint8_t origin[6];
+    uint32_t requestId;
+    uint32_t receivedAt;
+    uint8_t appliedFlags;
+    uint8_t brightness;
+    uint8_t preset;
+    uint8_t playlist;
+    uint16_t trim;
+    bool valid;
   };
 
 #ifdef ARDUINO_ARCH_ESP32
@@ -129,9 +263,15 @@ namespace {
   EspNowFloodSeen espNowFloodQueued[ESP_NOW_FLOOD_SEEN_SLOTS] = {};
   EspNowFloodOrder espNowFloodOrder[ESP_NOW_FLOOD_ORDER_SLOTS] = {};
   EspNowFloodApply espNowFloodApply[ESP_NOW_FLOOD_APPLY_SLOTS] = {};
+  EspNowFloodNode espNowFloodNodes[ESP_NOW_FLOOD_NODE_SLOTS] = {};
+  EspNowFloodAckRecord espNowFloodAcks[ESP_NOW_FLOOD_ACK_SLOTS] = {};
+  EspNowFloodRetainedScope espNowFloodRetained[ESP_NOW_FLOOD_RETAINED_SCOPES] = {};
+  EspNowFloodStateResponse espNowFloodStateResponses[ESP_NOW_FLOOD_STATE_RESPONSE_SLOTS] = {};
   uint8_t espNowFloodSeenNext = 0;
   uint8_t espNowFloodQueuedNext = 0;
   uint8_t espNowFloodOrderNext = 0;
+  uint8_t espNowFloodNodeNext = 0;
+  uint8_t espNowFloodAckNext = 0;
   uint32_t espNowFloodTxOrder = 0;
   uint32_t espNowFloodApplyOrder = 0;
   int32_t espNowFloodClockOffset = 0;
@@ -141,15 +281,26 @@ namespace {
   uint8_t espNowFloodMasterStratum = ESP_NOW_FLOOD_STRATUM_NONE;
   uint8_t espNowFloodWallStratum = ESP_NOW_FLOOD_STRATUM_NONE;
   uint32_t espNowFloodSequence = 0;
+  uint32_t espNowFloodStateRevision = 0;
   uint32_t espNowFloodLastClockSeen = 0;
   uint32_t espNowFloodLastSuperiorSeen = 0;
   uint32_t espNowFloodNextTimeSend = 0;
+  uint32_t espNowFloodNextAnnounce = 0;
+  uint32_t espNowFloodNextStateRequest = 0;
+  uint32_t espNowFloodLastStateRequest = 0;
+  uint32_t espNowFloodLastStateReplay = 0;
   uint32_t espNowFloodPendingEpoch = 0;
   uint32_t espNowFloodPendingUntil = 0;
   uint8_t espNowFloodPendingPreset = 0;
+  EspNowFloodRetainedVersion espNowFloodPendingPresetVersion = {};
+  uint8_t espNowFloodPendingPresetScope = ESP_NOW_FLOOD_DESTINATION_NODE;
+  uint8_t espNowFloodPendingPresetGroups = 0;
   bool espNowFloodClockValid = false;
   bool espNowFloodTimeMaster = false;
   bool espNowFloodInitialized = false;
+  bool espNowFloodRetainedInitialized = false;
+  bool espNowFloodStateSynchronized = false;
+  uint8_t espNowFloodStateRequestAttempts = 0;
 
   // Returns a random non-zero session or starting sequence identifier.
   uint32_t espNowFloodRandomId() {
@@ -204,6 +355,138 @@ namespace {
     uint8_t combined = 0;
     for (uint8_t index = 0; index < 6; index++) combined |= origin[index];
     return combined != 0;
+  }
+
+  // Writes the local station identity used consistently across STA and fallback-AP operation.
+  void espNowFloodLocalOrigin(uint8_t* origin) {
+    WiFi.macAddress(origin);
+  }
+
+  // Returns whether this controller should apply a command with the supplied destination.
+  bool espNowFloodDestinationMatches(const EspNowFloodPacket& packet) {
+    if (packet.destinationType == ESP_NOW_FLOOD_DESTINATION_ALL) return true;
+    if (packet.destinationType == ESP_NOW_FLOOD_DESTINATION_GROUP) return packet.destinationGroups && (receiveGroups & packet.destinationGroups);
+    if (packet.destinationType != ESP_NOW_FLOOD_DESTINATION_NODE) return false;
+    uint8_t localOrigin[6];
+    espNowFloodLocalOrigin(localOrigin);
+    return memcmp(packet.destination, localOrigin, sizeof(localOrigin)) == 0;
+  }
+
+  // Converts a MAC identity to the compact lowercase form accepted by the JSON API.
+  void espNowFloodFormatOrigin(char* output, const uint8_t* origin) {
+    snprintf(output, 13, "%02x%02x%02x%02x%02x%02x", origin[0], origin[1], origin[2], origin[3], origin[4], origin[5]);
+  }
+
+  // Parses exactly twelve hexadecimal digits without accepting multicast or zero identities.
+  bool espNowFloodParseOrigin(const char* input, uint8_t* origin) {
+    if (!input || strnlen(input, 13) != 12) return false;
+    for (uint8_t index = 0; index < 6; index++) {
+      uint8_t value = 0;
+      for (uint8_t nibble = 0; nibble < 2; nibble++) {
+        const char character = input[index * 2 + nibble];
+        uint8_t digit;
+        if (character >= '0' && character <= '9') digit = character - '0';
+        else if (character >= 'a' && character <= 'f') digit = character - 'a' + 10;
+        else if (character >= 'A' && character <= 'F') digit = character - 'A' + 10;
+        else return false;
+        value = (value << 4) | digit;
+      }
+      origin[index] = value;
+    }
+    return espNowFloodValidOrigin(origin);
+  }
+
+  // Advances the volatile Lamport clock after observing a desired-state revision.
+  void espNowFloodObserveStateRevision(uint32_t revision) {
+    if (int32_t(revision - espNowFloodStateRevision) > 0) espNowFloodStateRevision = revision;
+  }
+
+  // Compares Lamport revisions with deterministic concurrent-writer tie-breakers.
+  bool espNowFloodRetainedVersionNewer(const EspNowFloodRetainedVersion& candidate, const EspNowFloodRetainedVersion& current) {
+    const int32_t revisionOrder = int32_t(candidate.revision - current.revision);
+    if (revisionOrder) return revisionOrder > 0;
+    const int originOrder = memcmp(candidate.origin, current.origin, sizeof(candidate.origin));
+    if (originOrder) return originOrder > 0;
+    if (candidate.session != current.session) return candidate.session > current.session;
+    return int32_t(candidate.sequence - current.sequence) > 0;
+  }
+
+  // Maps the all-fleet scope and eight individual sync-group bits to fixed RAM slots.
+  uint8_t espNowFloodRetainedScopeIndex(uint8_t destinationType, uint8_t groupBit) {
+    if (destinationType == ESP_NOW_FLOOD_DESTINATION_ALL) return 0;
+    for (uint8_t bit = 0; bit < 8; bit++) if (groupBit == uint8_t(1U << bit)) return bit + 1U;
+    return ESP_NOW_FLOOD_RETAINED_SCOPES;
+  }
+
+  // Returns one semantic field from a retained scope without dynamic allocation.
+  EspNowFloodRetainedField* espNowFloodRetainedField(EspNowFloodRetainedScope& scope, uint8_t flag) {
+    if (flag == ESP_NOW_FLOOD_COMMAND_PRESET) return &scope.preset;
+    if (flag == ESP_NOW_FLOOD_COMMAND_POWER) return &scope.power;
+    if (flag == ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) return &scope.brightness;
+    return nullptr;
+  }
+
+  // Stores a newer field revision in one fleet or single-group retained scope.
+  void espNowFloodStoreRetainedField(uint8_t destinationType, uint8_t groupBit, uint8_t flag, uint8_t value, const EspNowFloodRetainedVersion& version) {
+    espNowFloodObserveStateRevision(version.revision);
+    const uint8_t scopeIndex = espNowFloodRetainedScopeIndex(destinationType, groupBit);
+    if (scopeIndex >= ESP_NOW_FLOOD_RETAINED_SCOPES) return;
+    EspNowFloodRetainedField* field = espNowFloodRetainedField(espNowFloodRetained[scopeIndex], flag);
+    if (!field || (field->valid && !espNowFloodRetainedVersionNewer(version, field->version))) return;
+    field->version = version;
+    field->value = value;
+    field->valid = true;
+  }
+
+  // Retains only fleet/group desired state; individual commands and local trim remain private.
+  void espNowFloodRememberRetainedCommand(const EspNowFloodPacket& packet, const EspNowFloodCommand& command) {
+    if (packet.destinationType != ESP_NOW_FLOOD_DESTINATION_ALL && packet.destinationType != ESP_NOW_FLOOD_DESTINATION_GROUP) return;
+    EspNowFloodRetainedVersion version = {};
+    version.revision = command.stateRevision;
+    version.effectEpoch = packet.effectEpoch;
+    memcpy(version.origin, packet.origin, sizeof(version.origin));
+    version.session = packet.session;
+    version.sequence = packet.sequence;
+
+    const uint8_t retainedFlags = command.flags & (ESP_NOW_FLOOD_COMMAND_PRESET | ESP_NOW_FLOOD_COMMAND_POWER | ESP_NOW_FLOOD_COMMAND_BRIGHTNESS);
+    for (uint8_t groupBit = 1; groupBit; groupBit <<= 1U) {
+      if (packet.destinationType == ESP_NOW_FLOOD_DESTINATION_GROUP && !(packet.destinationGroups & groupBit)) continue;
+      const uint8_t scopeGroup = packet.destinationType == ESP_NOW_FLOOD_DESTINATION_GROUP ? groupBit : 0;
+      if (retainedFlags & ESP_NOW_FLOOD_COMMAND_PRESET) espNowFloodStoreRetainedField(packet.destinationType, scopeGroup, ESP_NOW_FLOOD_COMMAND_PRESET, command.preset, version);
+      if (retainedFlags & ESP_NOW_FLOOD_COMMAND_POWER) espNowFloodStoreRetainedField(packet.destinationType, scopeGroup, ESP_NOW_FLOOD_COMMAND_POWER, command.power, version);
+      if (retainedFlags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) espNowFloodStoreRetainedField(packet.destinationType, scopeGroup, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS, command.brightness, version);
+      if (packet.destinationType == ESP_NOW_FLOOD_DESTINATION_ALL) break;
+    }
+  }
+
+  // Selects the newest fleet or matching group value for one requester field.
+  const EspNowFloodRetainedField* espNowFloodBestRetainedField(uint8_t groups, uint8_t flag, uint8_t& scopeType, uint8_t& scopeGroups) {
+    const EspNowFloodRetainedField* selected = espNowFloodRetainedField(espNowFloodRetained[0], flag);
+    if (selected && selected->valid) {
+      scopeType = ESP_NOW_FLOOD_DESTINATION_ALL;
+      scopeGroups = 0;
+    } else {
+      selected = nullptr;
+    }
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      const uint8_t groupBit = 1U << bit;
+      if (!(groups & groupBit)) continue;
+      const EspNowFloodRetainedField* candidate = espNowFloodRetainedField(espNowFloodRetained[bit + 1U], flag);
+      if (!candidate || !candidate->valid || (selected && !espNowFloodRetainedVersionNewer(candidate->version, selected->version))) continue;
+      selected = candidate;
+      scopeType = ESP_NOW_FLOOD_DESTINATION_GROUP;
+      scopeGroups = groupBit;
+    }
+    return selected;
+  }
+
+  // Reports whether this node can provide at least one retained fleet field.
+  bool espNowFloodHasRetainedState(uint8_t groups) {
+    uint8_t scopeType;
+    uint8_t scopeGroups;
+    return espNowFloodBestRetainedField(groups, ESP_NOW_FLOOD_COMMAND_PRESET, scopeType, scopeGroups)
+        || espNowFloodBestRetainedField(groups, ESP_NOW_FLOOD_COMMAND_POWER, scopeType, scopeGroups)
+        || espNowFloodBestRetainedField(groups, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS, scopeType, scopeGroups);
   }
 
   // Adds a validated frame to the callback-to-loop queue without blocking the Wi-Fi task.
@@ -286,6 +569,18 @@ namespace {
     return memcmp(packet.masterOrigin, localOrigin, sizeof(localOrigin)) < 0;
   }
 
+  // Detects the elected root announcing a different boot session. Followers must discard the
+  // dead incarnation immediately; otherwise their announcements can keep its election lease alive.
+  void espNowFloodHandleRootRestart(const EspNowFloodPacket& packet) {
+    if (!espNowFloodMasterSession
+        || memcmp(espNowFloodMasterOrigin, packet.origin, sizeof(espNowFloodMasterOrigin)) != 0
+        || espNowFloodMasterSession == packet.session) return;
+    espNowFloodClockValid = false;
+    espNowFloodTimeMaster = false;
+    espNowFloodLastClockSeen = millis() - ESP_NOW_FLOOD_MASTER_TIMEOUT_MS - 1U;
+    espNowFloodLastSuperiorSeen = espNowFloodLastClockSeen;
+  }
+
   // Adopts a packet's master and disciplines the monotonic clock without steady-state jumps.
   void espNowFloodAdoptClock(const EspNowFloodPacket& packet, uint32_t receivedAt) {
     const bool masterChanged = !espNowFloodSameMaster(packet);
@@ -345,24 +640,44 @@ namespace {
     espNowFloodWallStratum = distance < ESP_NOW_FLOOD_STRATUM_NONE ? distance : ESP_NOW_FLOOD_STRATUM_NONE - 1U;
   }
 
-  // Chooses a transmit slot, preferring to evict a time beacon rather than a command.
-  EspNowFloodTx* espNowFloodFindTxSlot(uint8_t type) {
+  // Returns the transmit priority used to keep commands and acknowledgements responsive.
+  uint8_t espNowFloodTxPriority(uint8_t type, bool relay) {
+    if (type == ESP_NOW_FLOOD_TYPE_COMMAND || type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY) return 4;
+    if (type == ESP_NOW_FLOOD_TYPE_ACK) return relay ? 2 : 3;
+    if (type == ESP_NOW_FLOOD_TYPE_STATE_ACK) return 3;
+    if (type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST) return 2;
+    if (type == ESP_NOW_FLOOD_TYPE_TIME) return 1;
+    return 0;
+  }
+
+  // Chooses a transmit slot, evicting lower-priority background traffic if necessary.
+  EspNowFloodTx* espNowFloodFindTxSlot(uint8_t type, bool relay) {
     for (EspNowFloodTx& slot : espNowFloodTx) if (!slot.active) return &slot;
-    if (type == ESP_NOW_FLOOD_TYPE_COMMAND) {
-      for (EspNowFloodTx& slot : espNowFloodTx) if (slot.packet.type == ESP_NOW_FLOOD_TYPE_TIME) return &slot;
+    EspNowFloodTx* selected = nullptr;
+    const uint8_t requestedPriority = espNowFloodTxPriority(type, relay);
+    for (EspNowFloodTx& slot : espNowFloodTx) {
+      if (espNowFloodTxPriority(slot.packet.type, slot.relay) >= requestedPriority) continue;
+      if (!selected || espNowFloodTxPriority(slot.packet.type, slot.relay) < espNowFloodTxPriority(selected->packet.type, selected->relay)) selected = &slot;
     }
-    return nullptr;
+    return selected;
   }
 
   // Schedules redundant transmissions with a small relay jitter to reduce collisions.
   bool espNowFloodScheduleTx(const EspNowFloodPacket& packet, uint8_t length, bool relay) {
-    EspNowFloodTx* slot = espNowFloodFindTxSlot(packet.type);
+    EspNowFloodTx* slot = espNowFloodFindTxSlot(packet.type, relay);
     if (!slot) return false;
     slot->packet = packet;
     slot->length = length;
-    slot->sendsRemaining = packet.type == ESP_NOW_FLOOD_TYPE_COMMAND ? ESP_NOW_FLOOD_COMMAND_REPEATS : ESP_NOW_FLOOD_TIME_REPEATS;
-    slot->nextSend = millis() + (relay ? random(7, 22) : 0);
+    if (packet.type == ESP_NOW_FLOOD_TYPE_COMMAND) slot->sendsRemaining = ESP_NOW_FLOOD_COMMAND_REPEATS;
+    else if (packet.type == ESP_NOW_FLOOD_TYPE_ACK) slot->sendsRemaining = ESP_NOW_FLOOD_ACK_REPEATS;
+    else if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST || packet.type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY) slot->sendsRemaining = ESP_NOW_FLOOD_COMMAND_REPEATS;
+    else if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_ACK) slot->sendsRemaining = ESP_NOW_FLOOD_ACK_REPEATS;
+    else if (packet.type == ESP_NOW_FLOOD_TYPE_ANNOUNCE) slot->sendsRemaining = ESP_NOW_FLOOD_ANNOUNCE_REPEATS;
+    else slot->sendsRemaining = ESP_NOW_FLOOD_TIME_REPEATS;
+    const bool localAcknowledgement = !relay && (packet.type == ESP_NOW_FLOOD_TYPE_ACK || packet.type == ESP_NOW_FLOOD_TYPE_STATE_ACK);
+    slot->nextSend = millis() + (relay ? random(7, 22) : (localAcknowledgement ? random(3, 29) : 0));
     slot->order = ++espNowFloodTxOrder;
+    slot->relay = relay;
     slot->active = true;
     return true;
   }
@@ -374,7 +689,7 @@ namespace {
     packet.magic[1] = ESP_NOW_FLOOD_MAGIC_1;
     packet.version = ESP_NOW_FLOOD_VERSION;
     packet.type = type;
-    WiFi.macAddress(packet.origin);
+    espNowFloodLocalOrigin(packet.origin);
     packet.session = espNowFloodLocalSession;
     packet.sequence = ++espNowFloodSequence;
     packet.senderTime = espNowFloodNetworkMillis();
@@ -383,7 +698,7 @@ namespace {
     packet.masterSession = espNowFloodMasterSession;
     packet.masterStratum = espNowFloodMasterStratum;
     espNowFloodStampWallTime(packet);
-    packet.groups = syncGroups;
+    packet.destinationType = ESP_NOW_FLOOD_DESTINATION_ALL;
     packet.hopsRemaining = ESP_NOW_FLOOD_MAX_HOPS;
     packet.payloadLength = payloadLength;
     return packet;
@@ -405,21 +720,189 @@ namespace {
     espNowFloodNextTimeSend = millis() + ESP_NOW_FLOOD_TIME_INTERVAL_MS;
   }
 
-  // Records the effect epoch to apply after the direct state update or asynchronous preset load.
-  void espNowFloodPrepareTimebase(uint32_t effectEpoch, uint8_t preset) {
-    espNowFloodPendingEpoch = effectEpoch;
-    espNowFloodPendingPreset = preset;
+  // Records timing and retained-scope metadata until an asynchronous preset finishes loading.
+  void espNowFloodPrepareTimebase(const EspNowFloodPacket& packet, const EspNowFloodCommand& command) {
+    espNowFloodPendingEpoch = packet.effectEpoch;
+    espNowFloodPendingPreset = command.flags & ESP_NOW_FLOOD_COMMAND_PRESET ? command.preset : 0;
     espNowFloodPendingUntil = millis() + ESP_NOW_FLOOD_PENDING_TIMEOUT_MS;
+    espNowFloodPendingPresetScope = packet.destinationType;
+    espNowFloodPendingPresetGroups = packet.destinationGroups;
+    espNowFloodPendingPresetVersion = {};
+    espNowFloodPendingPresetVersion.revision = command.stateRevision;
+    espNowFloodPendingPresetVersion.effectEpoch = packet.effectEpoch;
+    memcpy(espNowFloodPendingPresetVersion.origin, packet.origin, sizeof(packet.origin));
+    espNowFloodPendingPresetVersion.session = packet.session;
+    espNowFloodPendingPresetVersion.sequence = packet.sequence;
   }
 
   // Validates the complete semantic command before a frame is queued, relayed, or applied.
   bool espNowFloodReadCommand(const EspNowFloodPacket& packet, EspNowFloodCommand& command) {
     if (packet.payloadLength != sizeof(EspNowFloodCommand)) return false;
     memcpy(&command, packet.payload, sizeof(command));
-    if (!command.flags || command.flags & ~ESP_NOW_FLOOD_COMMAND_FLAGS) return false;
+    if (!command.flags || command.flags & ~ESP_NOW_FLOOD_COMMAND_FLAGS || !command.stateRevision) return false;
     if ((command.flags & ESP_NOW_FLOOD_COMMAND_PRESET) && (command.preset == 0 || command.preset > 250)) return false;
     if ((command.flags & ESP_NOW_FLOOD_COMMAND_POWER) && command.power > 1) return false;
+    if ((command.flags & ESP_NOW_FLOOD_COMMAND_TRIM) && (command.trim < ESP_NOW_FLOOD_TRIM_MIN || command.trim > ESP_NOW_FLOOD_TRIM_MAX)) return false;
     return true;
+  }
+
+  // Validates a discovery payload before it is copied into the bounded node table.
+  bool espNowFloodReadAnnouncement(const EspNowFloodPacket& packet, EspNowFloodAnnouncement& announcement) {
+    if (packet.payloadLength != sizeof(EspNowFloodAnnouncement)) return false;
+    memcpy(&announcement, packet.payload, sizeof(announcement));
+    if (!announcement.groups || announcement.trim < ESP_NOW_FLOOD_TRIM_MIN || announcement.trim > ESP_NOW_FLOOD_TRIM_MAX) return false;
+    if (strnlen(announcement.name, sizeof(announcement.name)) >= sizeof(announcement.name)) return false;
+    return true;
+  }
+
+  // Validates an acknowledgement and binds it to the packet's originating controller.
+  bool espNowFloodReadAcknowledgement(const EspNowFloodPacket& packet, EspNowFloodAcknowledgement& acknowledgement) {
+    if (packet.payloadLength != sizeof(EspNowFloodAcknowledgement)) return false;
+    memcpy(&acknowledgement, packet.payload, sizeof(acknowledgement));
+    if (!acknowledgement.requestId || !espNowFloodValidOrigin(acknowledgement.commandOrigin)) return false;
+    if (!acknowledgement.commandSession || !acknowledgement.commandSequence || !acknowledgement.appliedFlags || acknowledgement.appliedFlags & ~ESP_NOW_FLOOD_COMMAND_FLAGS) return false;
+    return acknowledgement.trim >= ESP_NOW_FLOOD_TRIM_MIN && acknowledgement.trim <= ESP_NOW_FLOOD_TRIM_MAX;
+  }
+
+  // Validates a newcomer's group membership request.
+  bool espNowFloodReadStateRequest(const EspNowFloodPacket& packet, EspNowFloodStateRequest& request) {
+    if (packet.payloadLength != sizeof(EspNowFloodStateRequest)) return false;
+    memcpy(&request, packet.payload, sizeof(request));
+    return request.groups != 0;
+  }
+
+  // Validates one retained field including its original scope and revision identity.
+  bool espNowFloodValidRetainedValue(const EspNowFloodRetainedValue& value, uint8_t flag) {
+    if (!value.version.revision || !value.version.session || !value.version.sequence || !espNowFloodValidOrigin(value.version.origin)) return false;
+    if (value.scopeType == ESP_NOW_FLOOD_DESTINATION_ALL) {
+      if (value.scopeGroups) return false;
+    } else if (value.scopeType == ESP_NOW_FLOOD_DESTINATION_GROUP) {
+      if (!value.scopeGroups || (value.scopeGroups & (value.scopeGroups - 1U))) return false;
+    } else {
+      return false;
+    }
+    if (flag == ESP_NOW_FLOOD_COMMAND_PRESET) return value.value > 0 && value.value <= 250;
+    if (flag == ESP_NOW_FLOOD_COMMAND_POWER) return value.value <= 1;
+    return flag == ESP_NOW_FLOOD_COMMAND_BRIGHTNESS;
+  }
+
+  // Validates a bounded retained-state response before forwarding or applying it.
+  bool espNowFloodReadStateReplay(const EspNowFloodPacket& packet, EspNowFloodStateReplay& replay) {
+    if (packet.payloadLength != sizeof(EspNowFloodStateReplay)) return false;
+    memcpy(&replay, packet.payload, sizeof(replay));
+    const uint8_t allowedFlags = ESP_NOW_FLOOD_COMMAND_PRESET | ESP_NOW_FLOOD_COMMAND_POWER | ESP_NOW_FLOOD_COMMAND_BRIGHTNESS;
+    if (!replay.requestSession || !replay.flags || replay.flags & ~allowedFlags) return false;
+    if ((replay.flags & ESP_NOW_FLOOD_COMMAND_PRESET) && !espNowFloodValidRetainedValue(replay.preset, ESP_NOW_FLOOD_COMMAND_PRESET)) return false;
+    if ((replay.flags & ESP_NOW_FLOOD_COMMAND_POWER) && !espNowFloodValidRetainedValue(replay.power, ESP_NOW_FLOOD_COMMAND_POWER)) return false;
+    if ((replay.flags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) && !espNowFloodValidRetainedValue(replay.brightness, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS)) return false;
+    return true;
+  }
+
+  // Updates or inserts one recently heard mesh participant without dynamic allocation.
+  bool espNowFloodRememberNode(const EspNowFloodPacket& packet, const EspNowFloodAnnouncement& announcement) {
+    EspNowFloodNode* selected = nullptr;
+    for (EspNowFloodNode& node : espNowFloodNodes) {
+      if (node.valid && memcmp(node.origin, packet.origin, sizeof(node.origin)) == 0) {
+        selected = &node;
+        break;
+      }
+      if (!node.valid && !selected) selected = &node;
+    }
+    if (!selected) {
+      selected = &espNowFloodNodes[espNowFloodNodeNext];
+      espNowFloodNodeNext = (espNowFloodNodeNext + 1U) % ESP_NOW_FLOOD_NODE_SLOTS;
+    }
+    const bool newBootSession = !selected->valid || selected->session != packet.session;
+    memcpy(selected->origin, packet.origin, sizeof(selected->origin));
+    selected->session = packet.session;
+    selected->lastSeen = millis();
+    selected->hops = ESP_NOW_FLOOD_MAX_HOPS - packet.hopsRemaining + 1U;
+    selected->groups = announcement.groups;
+    selected->brightness = announcement.brightness;
+    selected->preset = announcement.preset;
+    selected->playlist = announcement.playlist;
+    selected->trim = announcement.trim;
+    strlcpy(selected->name, announcement.name, sizeof(selected->name));
+    selected->valid = true;
+    return newBootSession;
+  }
+
+  // Stores a recent command acknowledgement for the gateway's JSON API and app.
+  void espNowFloodRememberAcknowledgement(const EspNowFloodPacket& packet, const EspNowFloodAcknowledgement& acknowledgement) {
+    EspNowFloodAckRecord* selected = nullptr;
+    for (EspNowFloodAckRecord& record : espNowFloodAcks) {
+      if (record.valid && record.requestId == acknowledgement.requestId && memcmp(record.origin, packet.origin, sizeof(record.origin)) == 0) {
+        selected = &record;
+        break;
+      }
+      if (!record.valid && !selected) selected = &record;
+    }
+    if (!selected) {
+      selected = &espNowFloodAcks[espNowFloodAckNext];
+      espNowFloodAckNext = (espNowFloodAckNext + 1U) % ESP_NOW_FLOOD_ACK_SLOTS;
+    }
+    memcpy(selected->origin, packet.origin, sizeof(selected->origin));
+    selected->requestId = acknowledgement.requestId;
+    selected->receivedAt = millis();
+    selected->appliedFlags = acknowledgement.appliedFlags;
+    selected->brightness = acknowledgement.brightness;
+    selected->preset = acknowledgement.preset;
+    selected->playlist = acknowledgement.playlist;
+    selected->trim = acknowledgement.trim;
+    selected->valid = true;
+    interfaceUpdateCallMode = CALL_MODE_WS_SEND;
+  }
+
+  // Schedules one jittered retained-state response and coalesces duplicate solicitations.
+  void espNowFloodScheduleStateResponse(const uint8_t* destination, uint32_t requestSession, uint8_t groups) {
+    if (!requestSession || !groups || !espNowFloodHasRetainedState(groups)) return;
+    EspNowFloodStateResponse* selected = nullptr;
+    for (EspNowFloodStateResponse& response : espNowFloodStateResponses) {
+      if (response.active && response.requestSession == requestSession && memcmp(response.destination, destination, sizeof(response.destination)) == 0) {
+        response.groups = groups;
+        return;
+      }
+      if (!response.active && !selected) selected = &response;
+    }
+    if (!selected) {
+      selected = &espNowFloodStateResponses[0];
+      for (EspNowFloodStateResponse& response : espNowFloodStateResponses) if (int32_t(response.due - selected->due) > 0) selected = &response;
+    }
+    memcpy(selected->destination, destination, sizeof(selected->destination));
+    selected->requestSession = requestSession;
+    selected->groups = groups;
+    selected->due = millis() + random(15, 76);
+    selected->active = true;
+  }
+
+  // Returns whether an overheard replay contains every field this responder knows, at least as new.
+  bool espNowFloodReplayCoversRetainedState(const EspNowFloodStateReplay& replay, uint8_t groups) {
+    const uint8_t flags[] = {ESP_NOW_FLOOD_COMMAND_PRESET, ESP_NOW_FLOOD_COMMAND_POWER, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS};
+    const EspNowFloodRetainedValue* values[] = {&replay.preset, &replay.power, &replay.brightness};
+    for (uint8_t index = 0; index < sizeof(flags) / sizeof(flags[0]); index++) {
+      uint8_t scopeType;
+      uint8_t scopeGroups;
+      const EspNowFloodRetainedField* local = espNowFloodBestRetainedField(groups, flags[index], scopeType, scopeGroups);
+      if (!local) continue;
+      if (!(replay.flags & flags[index]) || espNowFloodRetainedVersionNewer(local->version, values[index]->version)) return false;
+    }
+    return true;
+  }
+
+  // Cancels only responders whose retained knowledge is fully covered by an overheard replay.
+  void espNowFloodSuppressStateResponses(const uint8_t* destination, uint32_t requestSession, const EspNowFloodStateReplay& replay) {
+    for (EspNowFloodStateResponse& response : espNowFloodStateResponses) {
+      if (response.active && response.requestSession == requestSession && memcmp(response.destination, destination, sizeof(response.destination)) == 0 && espNowFloodReplayCoversRetainedState(replay, response.groups)) response.active = false;
+    }
+  }
+
+  // Stops redundant transmissions of a replay after its requester announces receipt.
+  void espNowFloodStopStateReplayTx(const uint8_t* destination, uint32_t requestSession) {
+    for (EspNowFloodTx& slot : espNowFloodTx) {
+      if (!slot.active || slot.packet.type != ESP_NOW_FLOOD_TYPE_STATE_REPLAY || memcmp(slot.packet.destination, destination, sizeof(slot.packet.destination)) != 0) continue;
+      EspNowFloodStateReplay replay;
+      if (espNowFloodReadStateReplay(slot.packet, replay) && replay.requestSession == requestSession) slot.active = false;
+    }
   }
 
   // Finds the bounded per-origin ordering state used to reject delayed command fields.
@@ -453,6 +936,7 @@ namespace {
     if ((command.flags & ESP_NOW_FLOOD_COMMAND_PRESET) && (order->validFlags & ESP_NOW_FLOOD_COMMAND_PRESET) && int32_t(packet.sequence - order->presetSequence) <= 0) command.flags &= ~ESP_NOW_FLOOD_COMMAND_PRESET;
     if ((command.flags & ESP_NOW_FLOOD_COMMAND_POWER) && (order->validFlags & ESP_NOW_FLOOD_COMMAND_POWER) && int32_t(packet.sequence - order->powerSequence) <= 0) command.flags &= ~ESP_NOW_FLOOD_COMMAND_POWER;
     if ((command.flags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) && (order->validFlags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) && int32_t(packet.sequence - order->brightnessSequence) <= 0) command.flags &= ~ESP_NOW_FLOOD_COMMAND_BRIGHTNESS;
+    if ((command.flags & ESP_NOW_FLOOD_COMMAND_TRIM) && (order->validFlags & ESP_NOW_FLOOD_COMMAND_TRIM) && int32_t(packet.sequence - order->trimSequence) <= 0) command.flags &= ~ESP_NOW_FLOOD_COMMAND_TRIM;
   }
 
   // Records accepted fields and stops retries fully replaced by the newer command.
@@ -462,13 +946,37 @@ namespace {
     if (command.flags & ESP_NOW_FLOOD_COMMAND_PRESET) order->presetSequence = packet.sequence;
     if (command.flags & ESP_NOW_FLOOD_COMMAND_POWER) order->powerSequence = packet.sequence;
     if (command.flags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) order->brightnessSequence = packet.sequence;
+    if (command.flags & ESP_NOW_FLOOD_COMMAND_TRIM) order->trimSequence = packet.sequence;
     order->validFlags |= command.flags;
 
     for (EspNowFloodTx& slot : espNowFloodTx) {
-      if (!slot.active || slot.packet.type != ESP_NOW_FLOOD_TYPE_COMMAND || slot.packet.session != packet.session || memcmp(slot.packet.origin, packet.origin, sizeof(packet.origin)) != 0 || int32_t(packet.sequence - slot.packet.sequence) <= 0) continue;
+      if (!slot.active || slot.packet.type != ESP_NOW_FLOOD_TYPE_COMMAND || slot.packet.session != packet.session || memcmp(slot.packet.origin, packet.origin, sizeof(packet.origin)) != 0 || slot.packet.destinationType != packet.destinationType || slot.packet.destinationGroups != packet.destinationGroups || memcmp(slot.packet.destination, packet.destination, sizeof(packet.destination)) != 0 || int32_t(packet.sequence - slot.packet.sequence) <= 0) continue;
       EspNowFloodCommand pending;
       if (espNowFloodReadCommand(slot.packet, pending) && !(pending.flags & ~command.flags)) slot.active = false;
     }
+  }
+
+  // Floods an idempotent receipt after this node has accepted an individually addressed command.
+  void espNowFloodAcknowledgeCommand(const EspNowFloodPacket& commandPacket, const EspNowFloodCommand& command) {
+    if (commandPacket.destinationType != ESP_NOW_FLOOD_DESTINATION_NODE || !command.requestId) return;
+    EspNowFloodAcknowledgement acknowledgement = {};
+    acknowledgement.requestId = command.requestId;
+    memcpy(acknowledgement.commandOrigin, commandPacket.origin, sizeof(acknowledgement.commandOrigin));
+    acknowledgement.commandSession = commandPacket.session;
+    acknowledgement.commandSequence = commandPacket.sequence;
+    acknowledgement.appliedFlags = command.flags;
+    acknowledgement.brightness = bri;
+    // Presets load asynchronously. Report the accepted selection immediately; the following
+    // announcement replaces this optimistic value with WLED's final preset/playlist state.
+    acknowledgement.preset = command.flags & ESP_NOW_FLOOD_COMMAND_PRESET ? command.preset : currentPreset;
+    acknowledgement.playlist = command.flags & ESP_NOW_FLOOD_COMMAND_PRESET ? 0 : (currentPlaylist > 0 && currentPlaylist <= 250 ? currentPlaylist : 0);
+    acknowledgement.trim = briMultiplier;
+
+    EspNowFloodPacket packet = espNowFloodCreatePacket(ESP_NOW_FLOOD_TYPE_ACK, sizeof(acknowledgement));
+    packet.destinationType = ESP_NOW_FLOOD_DESTINATION_NODE;
+    memcpy(packet.destination, commandPacket.origin, sizeof(packet.destination));
+    memcpy(packet.payload, &acknowledgement, sizeof(acknowledgement));
+    espNowFloodQueueIngress(packet, ESP_NOW_FLOOD_HEADER_SIZE + sizeof(acknowledgement), true);
   }
 
   // Validates and applies a semantic command once, outside the ESP-NOW callback context.
@@ -481,10 +989,19 @@ namespace {
     if (command.flags & ESP_NOW_FLOOD_COMMAND_PRESET) root[F("ps")] = command.preset;
     if (command.flags & ESP_NOW_FLOOD_COMMAND_POWER) root["on"] = bool(command.power);
     if (command.flags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) root["bri"] = command.brightness;
+    if (command.flags & ESP_NOW_FLOOD_COMMAND_TRIM) {
+      briMultiplier = command.trim;
+      BusManager::setBrightness(scaledBri(briT));
+      strip.trigger();
+      stateChanged = true;
+      configNeedsWrite = true;
+    }
 
-    espNowFloodPrepareTimebase(packet.effectEpoch, command.flags & ESP_NOW_FLOOD_COMMAND_PRESET ? command.preset : 0);
+    espNowFloodPrepareTimebase(packet, command);
     deserializeState(root, CALL_MODE_NO_NOTIFY);
     if (!(command.flags & ESP_NOW_FLOOD_COMMAND_PRESET)) applyESPNowFloodTimebase();
+    espNowFloodAcknowledgeCommand(packet, command);
+    espNowFloodNextAnnounce = millis();
   }
 
   // Queues commands behind an asynchronous preset while preserving cross-field order.
@@ -535,56 +1052,225 @@ namespace {
     espNowFloodApplyCommand(selected->packet);
   }
 
+  // Copies one retained RAM field into its validated wire representation.
+  void espNowFloodWriteRetainedValue(EspNowFloodRetainedValue& output, const EspNowFloodRetainedField& field, uint8_t scopeType, uint8_t scopeGroups) {
+    output.version = field.version;
+    output.scopeType = scopeType;
+    output.scopeGroups = scopeGroups;
+    output.value = field.value;
+  }
+
+  // Builds the effective retained state for the requester's current group membership.
+  bool espNowFloodBuildStateReplay(uint8_t groups, uint32_t requestSession, EspNowFloodStateReplay& replay) {
+    replay = {};
+    replay.requestSession = requestSession;
+    uint8_t scopeType = 0;
+    uint8_t scopeGroups = 0;
+    const EspNowFloodRetainedField* field = espNowFloodBestRetainedField(groups, ESP_NOW_FLOOD_COMMAND_PRESET, scopeType, scopeGroups);
+    if (field) {
+      replay.flags |= ESP_NOW_FLOOD_COMMAND_PRESET;
+      espNowFloodWriteRetainedValue(replay.preset, *field, scopeType, scopeGroups);
+    }
+    field = espNowFloodBestRetainedField(groups, ESP_NOW_FLOOD_COMMAND_POWER, scopeType, scopeGroups);
+    if (field) {
+      replay.flags |= ESP_NOW_FLOOD_COMMAND_POWER;
+      espNowFloodWriteRetainedValue(replay.power, *field, scopeType, scopeGroups);
+    }
+    field = espNowFloodBestRetainedField(groups, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS, scopeType, scopeGroups);
+    if (field) {
+      replay.flags |= ESP_NOW_FLOOD_COMMAND_BRIGHTNESS;
+      espNowFloodWriteRetainedValue(replay.brightness, *field, scopeType, scopeGroups);
+    }
+    return replay.flags != 0;
+  }
+
+  // Sends one retained snapshot after the response jitter expires.
+  void espNowFloodServiceStateResponses() {
+    EspNowFloodStateResponse* selected = nullptr;
+    for (EspNowFloodStateResponse& response : espNowFloodStateResponses) {
+      if (!response.active || int32_t(millis() - response.due) < 0) continue;
+      if (!selected || int32_t(response.due - selected->due) < 0) selected = &response;
+    }
+    if (!selected) return;
+
+    EspNowFloodStateReplay replay;
+    if (!espNowFloodBuildStateReplay(selected->groups, selected->requestSession, replay)) {
+      selected->active = false;
+      return;
+    }
+    EspNowFloodPacket packet = espNowFloodCreatePacket(ESP_NOW_FLOOD_TYPE_STATE_REPLAY, sizeof(replay));
+    packet.destinationType = ESP_NOW_FLOOD_DESTINATION_NODE;
+    memcpy(packet.destination, selected->destination, sizeof(packet.destination));
+    memcpy(packet.payload, &replay, sizeof(replay));
+    if (espNowFloodQueueIngress(packet, ESP_NOW_FLOOD_HEADER_SIZE + sizeof(replay), true)) {
+      selected->active = false;
+    } else {
+      selected->due = millis() + 100;
+    }
+  }
+
+  // Announces that this boot session received a retained snapshot.
+  void espNowFloodAcknowledgeStateReplay() {
+    EspNowFloodPacket packet = espNowFloodCreatePacket(ESP_NOW_FLOOD_TYPE_STATE_ACK, 0);
+    espNowFloodQueueIngress(packet, ESP_NOW_FLOOD_HEADER_SIZE, true);
+  }
+
+  // Applies one newer retained field through the normal preset barrier and effect timebase path.
+  bool espNowFloodApplyRetainedValue(const EspNowFloodPacket& replayPacket, const EspNowFloodRetainedValue& value, uint8_t flag) {
+    if (value.scopeType == ESP_NOW_FLOOD_DESTINATION_GROUP && !(receiveGroups & value.scopeGroups)) return false;
+    uint8_t currentScopeType;
+    uint8_t currentScopeGroups;
+    const EspNowFloodRetainedField* current = espNowFloodBestRetainedField(receiveGroups, flag, currentScopeType, currentScopeGroups);
+    if (current && !espNowFloodRetainedVersionNewer(value.version, current->version)) return false;
+
+    espNowFloodStoreRetainedField(value.scopeType, value.scopeGroups, flag, value.value, value.version);
+    EspNowFloodCommand command = {};
+    command.flags = flag;
+    command.stateRevision = value.version.revision;
+    if (flag == ESP_NOW_FLOOD_COMMAND_PRESET) command.preset = value.value;
+    else if (flag == ESP_NOW_FLOOD_COMMAND_POWER) command.power = value.value;
+    else command.brightness = value.value;
+
+    EspNowFloodPacket effectivePacket = replayPacket;
+    effectivePacket.type = ESP_NOW_FLOOD_TYPE_COMMAND;
+    effectivePacket.session = value.version.session;
+    effectivePacket.sequence = value.version.sequence;
+    effectivePacket.effectEpoch = value.version.effectEpoch;
+    memcpy(effectivePacket.origin, value.version.origin, sizeof(effectivePacket.origin));
+    effectivePacket.destinationType = value.scopeType;
+    memset(effectivePacket.destination, 0, sizeof(effectivePacket.destination));
+    effectivePacket.destinationGroups = value.scopeGroups;
+    effectivePacket.payloadLength = sizeof(command);
+    memcpy(effectivePacket.payload, &command, sizeof(command));
+    espNowFloodApplyOrQueueCommand(effectivePacket);
+    return true;
+  }
+
+  // Merges a retained snapshot field-by-field. Power-on precedes brightness because WLED restores
+  // briLast when turning on; power-off follows brightness so the requested final state stays off.
+  void espNowFloodApplyStateReplay(const EspNowFloodPacket& packet, const EspNowFloodStateReplay& replay) {
+    if (replay.requestSession != espNowFloodLocalSession) return;
+    if (replay.flags & ESP_NOW_FLOOD_COMMAND_PRESET) espNowFloodApplyRetainedValue(packet, replay.preset, ESP_NOW_FLOOD_COMMAND_PRESET);
+    if ((replay.flags & ESP_NOW_FLOOD_COMMAND_POWER) && replay.power.value) espNowFloodApplyRetainedValue(packet, replay.power, ESP_NOW_FLOOD_COMMAND_POWER);
+    if (replay.flags & ESP_NOW_FLOOD_COMMAND_BRIGHTNESS) espNowFloodApplyRetainedValue(packet, replay.brightness, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS);
+    if ((replay.flags & ESP_NOW_FLOOD_COMMAND_POWER) && !replay.power.value) espNowFloodApplyRetainedValue(packet, replay.power, ESP_NOW_FLOOD_COMMAND_POWER);
+    espNowFloodStateSynchronized = true;
+    espNowFloodLastStateReplay = millis();
+    espNowFloodAcknowledgeStateReplay();
+  }
+
+  // Solicits frequently while joining, then continues at a bounded background rate.
+  void espNowFloodSendStateRequestIfDue() {
+    if (espNowFloodStateSynchronized || int32_t(millis() - espNowFloodNextStateRequest) < 0) return;
+    EspNowFloodStateRequest request = {uint8_t(receiveGroups ? receiveGroups : 1)};
+    EspNowFloodPacket packet = espNowFloodCreatePacket(ESP_NOW_FLOOD_TYPE_STATE_REQUEST, sizeof(request));
+    memcpy(packet.payload, &request, sizeof(request));
+    if (!espNowFloodQueueIngress(packet, ESP_NOW_FLOOD_HEADER_SIZE + sizeof(request), true)) {
+      espNowFloodNextStateRequest = millis() + 250;
+      return;
+    }
+    espNowFloodLastStateRequest = millis();
+    const uint32_t interval = espNowFloodStateRequestAttempts < ESP_NOW_FLOOD_STATE_REQUEST_FAST_ATTEMPTS
+        ? ESP_NOW_FLOOD_STATE_REQUEST_FAST_MS
+        : ESP_NOW_FLOOD_STATE_REQUEST_SLOW_MS;
+    if (espNowFloodStateRequestAttempts < UINT8_MAX) espNowFloodStateRequestAttempts++;
+    espNowFloodNextStateRequest = millis() + interval + random(0, 251);
+  }
+
   // Processes a unique local or received frame and schedules its bounded relay transmissions.
   void espNowFloodProcessIngress(const EspNowFloodIngress& ingress) {
     const EspNowFloodPacket& packet = ingress.packet;
-    if (!packet.groups || (!(receiveGroups & packet.groups) && !ingress.local)) return;
     if (espNowFloodAlreadySeen(packet)) return;
-
-    EspNowFloodCommand command = {};
-    if (packet.type == ESP_NOW_FLOOD_TYPE_COMMAND) {
-      if (!espNowFloodReadCommand(packet, command)) return;
-      espNowFloodFilterStaleCommand(packet, command);
-      if (!command.flags) return;
-      espNowFloodRememberCommand(packet, command);
-    }
 
     if (ingress.local) {
       espNowFloodScheduleTx(packet, ingress.length, false);
+    } else {
+      // Only a lower-MAC root suppresses this node's own election deadline. Early discovery
+      // announcements are allowed before their sender has elected a clock root.
+      if (packet.masterSession && espNowFloodValidOrigin(packet.masterOrigin) && espNowFloodRootOutranksLocal(packet)) espNowFloodLastSuperiorSeen = millis();
+
       if (packet.type == ESP_NOW_FLOOD_TYPE_COMMAND) {
-        EspNowFloodPacket effectivePacket = packet;
-        memcpy(effectivePacket.payload, &command, sizeof(command));
-        espNowFloodApplyOrQueueCommand(effectivePacket);
+        const bool masterExpired = millis() - espNowFloodLastClockSeen > ESP_NOW_FLOOD_MASTER_TIMEOUT_MS;
+        const bool clockAccepted = espNowFloodSameMaster(packet) || !espNowFloodClockValid || masterExpired || espNowFloodCandidatePreferred(packet);
+        if (clockAccepted) espNowFloodAdoptClock(packet, ingress.receivedAt);
+      } else if (packet.type == ESP_NOW_FLOOD_TYPE_TIME) {
+        const bool masterExpired = millis() - espNowFloodLastClockSeen > ESP_NOW_FLOOD_MASTER_TIMEOUT_MS;
+        if (!espNowFloodSameMaster(packet) && espNowFloodClockValid && !masterExpired && !espNowFloodCandidatePreferred(packet)) return;
+        espNowFloodAdoptClock(packet, ingress.receivedAt);
+        espNowFloodAdoptWallTime(packet, ingress.receivedAt);
+        espNowFloodAlignEffectEpoch(packet.effectEpoch);
+      }
+
+      // Destination filtering is deliberately after relay scheduling. A node that is not the
+      // recipient may still be the only bridge to the recipient.
+      const bool reachedTargetedDestination = (packet.type == ESP_NOW_FLOOD_TYPE_ACK || packet.type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY) && espNowFloodDestinationMatches(packet);
+      if (packet.hopsRemaining > 0 && !reachedTargetedDestination) {
+        EspNowFloodPacket relay = packet;
+        relay.hopsRemaining--;
+        espNowFloodScheduleTx(relay, ingress.length, true);
+      }
+    }
+
+    if (packet.type == ESP_NOW_FLOOD_TYPE_ANNOUNCE) {
+      if (!ingress.local) {
+        EspNowFloodAnnouncement announcement;
+        if (espNowFloodReadAnnouncement(packet, announcement)) {
+          espNowFloodHandleRootRestart(packet);
+          if (espNowFloodRememberNode(packet, announcement)) espNowFloodScheduleStateResponse(packet.origin, packet.session, announcement.groups);
+        }
       }
       return;
     }
-
-    // Only a lower-MAC root suppresses this node's own election deadline.
-    if (espNowFloodRootOutranksLocal(packet)) espNowFloodLastSuperiorSeen = millis();
-
-    if (packet.type == ESP_NOW_FLOOD_TYPE_COMMAND) {
-      const bool masterExpired = millis() - espNowFloodLastClockSeen > ESP_NOW_FLOOD_MASTER_TIMEOUT_MS;
-      const bool clockAccepted = espNowFloodSameMaster(packet) || !espNowFloodClockValid || masterExpired || espNowFloodCandidatePreferred(packet);
-      if (clockAccepted) espNowFloodAdoptClock(packet, ingress.receivedAt);
-    } else if (packet.type == ESP_NOW_FLOOD_TYPE_TIME) {
-      const bool masterExpired = millis() - espNowFloodLastClockSeen > ESP_NOW_FLOOD_MASTER_TIMEOUT_MS;
-      if (!espNowFloodSameMaster(packet) && espNowFloodClockValid && !masterExpired && !espNowFloodCandidatePreferred(packet)) return;
-      espNowFloodAdoptClock(packet, ingress.receivedAt);
-      espNowFloodAdoptWallTime(packet, ingress.receivedAt);
-      espNowFloodAlignEffectEpoch(packet.effectEpoch);
-    } else {
+    if (packet.type == ESP_NOW_FLOOD_TYPE_ACK) {
+      if (espNowFloodDestinationMatches(packet)) {
+        EspNowFloodAcknowledgement acknowledgement;
+        if (espNowFloodReadAcknowledgement(packet, acknowledgement)) espNowFloodRememberAcknowledgement(packet, acknowledgement);
+      }
       return;
     }
-
-    if (packet.hopsRemaining > 0) {
-      EspNowFloodPacket relay = packet;
-      relay.hopsRemaining--;
-      espNowFloodScheduleTx(relay, ingress.length, true);
+    if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST) {
+      if (!ingress.local) {
+        EspNowFloodStateRequest request;
+        if (espNowFloodReadStateRequest(packet, request)) espNowFloodScheduleStateResponse(packet.origin, packet.session, request.groups);
+      }
+      return;
     }
-    if (packet.type == ESP_NOW_FLOOD_TYPE_COMMAND) {
-      EspNowFloodPacket effectivePacket = packet;
-      memcpy(effectivePacket.payload, &command, sizeof(command));
-      espNowFloodApplyOrQueueCommand(effectivePacket);
+    if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY) {
+      EspNowFloodStateReplay replay;
+      if (!espNowFloodReadStateReplay(packet, replay)) return;
+      espNowFloodSuppressStateResponses(packet.destination, replay.requestSession, replay);
+      if (espNowFloodDestinationMatches(packet)) espNowFloodApplyStateReplay(packet, replay);
+      return;
+    }
+    if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_ACK) {
+      // A replay may be incomplete if responders have different retained fields. Suppression is
+      // therefore based on overheard replay contents rather than this receipt alone.
+      if (!ingress.local) espNowFloodStopStateReplayTx(packet.origin, packet.session);
+      return;
+    }
+    if (packet.type != ESP_NOW_FLOOD_TYPE_COMMAND) return;
+
+    EspNowFloodCommand command;
+    if (!espNowFloodReadCommand(packet, command)) return;
+    espNowFloodObserveStateRevision(command.stateRevision);
+    espNowFloodRememberRetainedCommand(packet, command);
+    if (!espNowFloodDestinationMatches(packet)) return;
+    espNowFloodFilterStaleCommand(packet, command);
+    if (!command.flags) return;
+    espNowFloodRememberCommand(packet, command);
+    EspNowFloodPacket effectivePacket = packet;
+    memcpy(effectivePacket.payload, &command, sizeof(command));
+    espNowFloodApplyOrQueueCommand(effectivePacket);
+  }
+
+  // Removes expired discovery and acknowledgement entries from the fixed tables.
+  void espNowFloodExpireStatus() {
+    const uint32_t now = millis();
+    for (EspNowFloodNode& node : espNowFloodNodes) {
+      if (node.valid && now - node.lastSeen > ESP_NOW_FLOOD_NODE_TIMEOUT_MS) node.valid = false;
+    }
+    for (EspNowFloodAckRecord& record : espNowFloodAcks) {
+      if (record.valid && now - record.receivedAt > ESP_NOW_FLOOD_ACK_TIMEOUT_MS) record.valid = false;
     }
   }
 
@@ -595,7 +1281,7 @@ namespace {
       esp_now_peer_info_t peer = {};
       memcpy(peer.peer_addr, ESPNOW_BROADCAST_ADDRESS, ESP_NOW_ETH_ALEN);
       peer.channel = 0; // Follow the radio's current Wi-Fi channel.
-      peer.ifidx = apActive ? WIFI_IF_AP : WIFI_IF_STA;
+      peer.ifidx = espNowUseAPInterface ? WIFI_IF_AP : WIFI_IF_STA;
       peer.encrypt = false;
       const esp_err_t addResult = esp_now_add_peer(&peer);
       if (addResult != ESP_OK && addResult != ESP_ERR_ESPNOW_EXIST) return false;
@@ -614,17 +1300,10 @@ namespace {
     if (statusESPNow != ESP_NOW_STATE_ON) return;
     const uint32_t now = millis();
 
-    EspNowFloodTx* commandSlot = nullptr;
+    EspNowFloodTx* selected = nullptr;
     for (EspNowFloodTx& slot : espNowFloodTx) {
-      if (!slot.active || slot.packet.type != ESP_NOW_FLOOD_TYPE_COMMAND) continue;
-      if (!commandSlot || int32_t(slot.order - commandSlot->order) < 0) commandSlot = &slot;
-    }
-
-    EspNowFloodTx* selected = commandSlot;
-    if (!selected) {
-      for (EspNowFloodTx& slot : espNowFloodTx) {
-        if (slot.active && slot.packet.type == ESP_NOW_FLOOD_TYPE_TIME && (!selected || int32_t(slot.order - selected->order) < 0)) selected = &slot;
-      }
+      if (!slot.active) continue;
+      if (!selected || espNowFloodTxPriority(slot.packet.type, slot.relay) > espNowFloodTxPriority(selected->packet.type, selected->relay) || (espNowFloodTxPriority(slot.packet.type, slot.relay) == espNowFloodTxPriority(selected->packet.type, selected->relay) && int32_t(slot.order - selected->order) < 0)) selected = &slot;
     }
     if (!selected || int32_t(now - selected->nextSend) < 0) return;
 
@@ -652,6 +1331,26 @@ namespace {
     }
   }
 
+  // Periodically advertises identity and calibrated state for gateway-side fleet discovery.
+  void espNowFloodSendAnnouncementIfDue() {
+    if (int32_t(millis() - espNowFloodNextAnnounce) < 0) return;
+    EspNowFloodAnnouncement announcement = {};
+    announcement.groups = receiveGroups ? receiveGroups : 1;
+    announcement.brightness = bri;
+    announcement.preset = currentPreset;
+    announcement.playlist = currentPlaylist > 0 && currentPlaylist <= 250 ? currentPlaylist : 0;
+    announcement.trim = briMultiplier;
+    strlcpy(announcement.name, serverDescription, sizeof(announcement.name));
+
+    EspNowFloodPacket packet = espNowFloodCreatePacket(ESP_NOW_FLOOD_TYPE_ANNOUNCE, sizeof(announcement));
+    memcpy(packet.payload, &announcement, sizeof(announcement));
+    if (espNowFloodQueueIngress(packet, ESP_NOW_FLOOD_HEADER_SIZE + sizeof(announcement), true)) {
+      espNowFloodNextAnnounce = millis() + ESP_NOW_FLOOD_ANNOUNCE_INTERVAL_MS + random(0, 501);
+    } else {
+      espNowFloodNextAnnounce = millis() + 250;
+    }
+  }
+
   // Elects a replacement after a partition loses contact with its previous root.
   void espNowFloodElectIfOrphaned() {
     if (espNowFloodTimeMaster || millis() - espNowFloodLastSuperiorSeen <= ESP_NOW_FLOOD_MASTER_TIMEOUT_MS) return;
@@ -676,9 +1375,18 @@ void initESPNowFlood() {
   memset(espNowFloodQueued, 0, sizeof(espNowFloodQueued));
   memset(espNowFloodOrder, 0, sizeof(espNowFloodOrder));
   memset(espNowFloodApply, 0, sizeof(espNowFloodApply));
+  memset(espNowFloodNodes, 0, sizeof(espNowFloodNodes));
+  memset(espNowFloodAcks, 0, sizeof(espNowFloodAcks));
+  memset(espNowFloodStateResponses, 0, sizeof(espNowFloodStateResponses));
+  if (!espNowFloodRetainedInitialized) {
+    memset(espNowFloodRetained, 0, sizeof(espNowFloodRetained));
+    espNowFloodRetainedInitialized = true;
+  }
   espNowFloodSeenNext = 0;
   espNowFloodQueuedNext = 0;
   espNowFloodOrderNext = 0;
+  espNowFloodNodeNext = 0;
+  espNowFloodAckNext = 0;
   espNowFloodTxOrder = 0;
   espNowFloodApplyOrder = 0;
   espNowFloodClockOffset = 0;
@@ -692,9 +1400,19 @@ void initESPNowFlood() {
   espNowFloodWallStratum = ESP_NOW_FLOOD_STRATUM_NONE;
   espNowFloodLastClockSeen = millis();
   espNowFloodLastSuperiorSeen = millis();
+  espNowFloodNextAnnounce = millis() + random(250, 751);
+  espNowFloodStateSynchronized = espNowFloodHasRetainedState(receiveGroups ? receiveGroups : 1);
+  espNowFloodStateRequestAttempts = 0;
+  // Solicit before the first announcement so recovery does not depend on that announcement.
+  espNowFloodNextStateRequest = millis() + random(50, 151);
+  espNowFloodLastStateRequest = 0;
+  espNowFloodLastStateReplay = 0;
   espNowFloodPendingUntil = 0;
   espNowFloodPendingEpoch = 0;
   espNowFloodPendingPreset = 0;
+  espNowFloodPendingPresetScope = ESP_NOW_FLOOD_DESTINATION_NODE;
+  espNowFloodPendingPresetGroups = 0;
+  espNowFloodPendingPresetVersion = {};
 }
 
 // Stops flood activity while preserving the allocated ESP32 queue for the next reconnect.
@@ -703,14 +1421,90 @@ void deinitESPNowFlood() {
   espNowFloodTimeMaster = false;
   memset(espNowFloodTx, 0, sizeof(espNowFloodTx));
   memset(espNowFloodApply, 0, sizeof(espNowFloodApply));
+  memset(espNowFloodStateResponses, 0, sizeof(espNowFloodStateResponses));
   espNowFloodPendingUntil = 0;
   espNowFloodPendingPreset = 0;
+  espNowFloodPendingPresetScope = ESP_NOW_FLOOD_DESTINATION_NODE;
+  espNowFloodPendingPresetGroups = 0;
+  espNowFloodPendingPresetVersion = {};
 #ifdef ARDUINO_ARCH_ESP32
   if (espNowFloodRxQueue) xQueueReset(espNowFloodRxQueue);
 #else
   espNowFloodRxHead = 0;
   espNowFloodRxTail = 0;
 #endif
+}
+
+// Adds the bounded mesh roster and recent command receipts to /json/info and WebSocket info.
+void serializeESPNowFloodInfo(JsonObject root) {
+  char originText[13];
+  uint8_t localOrigin[6];
+  espNowFloodLocalOrigin(localOrigin);
+  espNowFloodFormatOrigin(originText, localOrigin);
+  root["id"] = originText;
+  root["trim"] = briMultiplier;
+  root[F("groups")] = receiveGroups;
+  root[F("synced")] = espNowFloodStateSynchronized;
+
+  JsonObject recovery = root.createNestedObject(F("recovery"));
+  recovery[F("status")] = statusESPNow;
+  recovery[F("interface")] = espNowUseAPInterface ? F("ap") : F("sta");
+  recovery[F("channel")] = WiFi.channel();
+  recovery[F("apChannel")] = apChannel;
+  recovery[F("requests")] = espNowFloodStateRequestAttempts;
+  recovery[F("retained")] = espNowFloodHasRetainedState(receiveGroups ? receiveGroups : 1);
+  if (espNowFloodLastStateRequest) recovery[F("lastRequestAge")] = millis() - espNowFloodLastStateRequest;
+  else recovery[F("lastRequestAge")] = nullptr;
+  if (espNowFloodLastStateReplay) recovery[F("lastReplayAge")] = millis() - espNowFloodLastStateReplay;
+  else recovery[F("lastReplayAge")] = nullptr;
+  const int32_t untilRequest = int32_t(espNowFloodNextStateRequest - millis());
+  recovery[F("nextRequestIn")] = espNowFloodStateSynchronized || untilRequest < 0 ? 0 : untilRequest;
+
+  JsonArray nodes = root.createNestedArray(F("nodes"));
+  JsonObject local = nodes.createNestedObject();
+  local["id"] = originText;
+  local["name"] = serverDescription;
+  local[F("groups")] = receiveGroups;
+  local["bri"] = bri;
+  local["on"] = bri > 0;
+  local["ps"] = currentPreset;
+  local["pl"] = currentPlaylist > 0 && currentPlaylist <= 250 ? currentPlaylist : 0;
+  local["trim"] = briMultiplier;
+  local["hops"] = 0;
+  local["age"] = 0;
+
+  const uint32_t now = millis();
+  for (const EspNowFloodNode& node : espNowFloodNodes) {
+    if (!node.valid || now - node.lastSeen > ESP_NOW_FLOOD_NODE_TIMEOUT_MS) continue;
+    espNowFloodFormatOrigin(originText, node.origin);
+    JsonObject item = nodes.createNestedObject();
+    item["id"] = originText;
+    item["name"] = node.name;
+    item[F("groups")] = node.groups;
+    item["bri"] = node.brightness;
+    item["on"] = node.brightness > 0;
+    item["ps"] = node.preset;
+    item["pl"] = node.playlist;
+    item["trim"] = node.trim;
+    item["hops"] = node.hops;
+    item["age"] = now - node.lastSeen;
+  }
+
+  JsonArray acknowledgements = root.createNestedArray(F("acks"));
+  for (const EspNowFloodAckRecord& record : espNowFloodAcks) {
+    if (!record.valid || now - record.receivedAt > ESP_NOW_FLOOD_ACK_TIMEOUT_MS) continue;
+    espNowFloodFormatOrigin(originText, record.origin);
+    JsonObject item = acknowledgements.createNestedObject();
+    item[F("req")] = record.requestId;
+    item["id"] = originText;
+    item[F("flags")] = record.appliedFlags;
+    item["bri"] = record.brightness;
+    item["on"] = record.brightness > 0;
+    item["ps"] = record.preset;
+    item["pl"] = record.playlist;
+    item["trim"] = record.trim;
+    item["age"] = now - record.receivedAt;
+  }
 }
 
 // Recognizes, strictly validates, and queues a raw ESP-NOW flood frame.
@@ -721,12 +1515,38 @@ bool receiveESPNowFloodPacket(const uint8_t* data, uint8_t len, bool broadcast) 
   EspNowFloodPacket packet = {};
   memcpy(&packet, data, len);
   if (packet.version != ESP_NOW_FLOOD_VERSION || packet.hopsRemaining > ESP_NOW_FLOOD_MAX_HOPS || packet.payloadLength > sizeof(packet.payload) || len != ESP_NOW_FLOOD_HEADER_SIZE + packet.payloadLength) return true;
-  if (!packet.session || !packet.masterSession || (packet.masterStratum != ESP_NOW_FLOOD_STRATUM_NONE && packet.wallMillis >= 1000) || !espNowFloodValidOrigin(packet.origin) || !espNowFloodValidOrigin(packet.masterOrigin)) return true;
-  if ((packet.type == ESP_NOW_FLOOD_TYPE_COMMAND && packet.payloadLength != sizeof(EspNowFloodCommand)) || (packet.type == ESP_NOW_FLOOD_TYPE_TIME && packet.payloadLength != 0)) return true;
-  if (packet.type != ESP_NOW_FLOOD_TYPE_COMMAND && packet.type != ESP_NOW_FLOOD_TYPE_TIME) return true;
+  if (!packet.session || !espNowFloodValidOrigin(packet.origin) || packet.destinationType > ESP_NOW_FLOOD_DESTINATION_GROUP) return true;
+  if (packet.destinationType == ESP_NOW_FLOOD_DESTINATION_NODE && !espNowFloodValidOrigin(packet.destination)) return true;
+  if (packet.destinationType == ESP_NOW_FLOOD_DESTINATION_GROUP && !packet.destinationGroups) return true;
+  const bool validMaster = packet.masterSession && espNowFloodValidOrigin(packet.masterOrigin);
+  const bool masterOptional = packet.type == ESP_NOW_FLOOD_TYPE_ANNOUNCE || packet.type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST || packet.type == ESP_NOW_FLOOD_TYPE_STATE_ACK;
+  if (!masterOptional && !validMaster) return true;
+  if (validMaster && packet.masterStratum != ESP_NOW_FLOOD_STRATUM_NONE && packet.wallMillis >= 1000) return true;
+  if ((packet.type == ESP_NOW_FLOOD_TYPE_COMMAND && packet.payloadLength != sizeof(EspNowFloodCommand))
+      || (packet.type == ESP_NOW_FLOOD_TYPE_TIME && packet.payloadLength != 0)
+      || (packet.type == ESP_NOW_FLOOD_TYPE_ANNOUNCE && packet.payloadLength != sizeof(EspNowFloodAnnouncement))
+      || (packet.type == ESP_NOW_FLOOD_TYPE_ACK && packet.payloadLength != sizeof(EspNowFloodAcknowledgement))
+      || (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST && packet.payloadLength != sizeof(EspNowFloodStateRequest))
+      || (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY && packet.payloadLength != sizeof(EspNowFloodStateReplay))
+      || (packet.type == ESP_NOW_FLOOD_TYPE_STATE_ACK && packet.payloadLength != 0)) return true;
+  if (packet.type < ESP_NOW_FLOOD_TYPE_COMMAND || packet.type > ESP_NOW_FLOOD_TYPE_STATE_ACK) return true;
+  if ((packet.type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST || packet.type == ESP_NOW_FLOOD_TYPE_STATE_ACK) && packet.destinationType != ESP_NOW_FLOOD_DESTINATION_ALL) return true;
+  if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY && packet.destinationType != ESP_NOW_FLOOD_DESTINATION_NODE) return true;
   if (packet.type == ESP_NOW_FLOOD_TYPE_COMMAND) {
     EspNowFloodCommand command;
     if (!espNowFloodReadCommand(packet, command)) return true;
+  } else if (packet.type == ESP_NOW_FLOOD_TYPE_ANNOUNCE) {
+    EspNowFloodAnnouncement announcement;
+    if (!espNowFloodReadAnnouncement(packet, announcement)) return true;
+  } else if (packet.type == ESP_NOW_FLOOD_TYPE_ACK) {
+    EspNowFloodAcknowledgement acknowledgement;
+    if (!espNowFloodReadAcknowledgement(packet, acknowledgement)) return true;
+  } else if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REQUEST) {
+    EspNowFloodStateRequest request;
+    if (!espNowFloodReadStateRequest(packet, request)) return true;
+  } else if (packet.type == ESP_NOW_FLOOD_TYPE_STATE_REPLAY) {
+    EspNowFloodStateReplay replay;
+    if (!espNowFloodReadStateReplay(packet, replay)) return true;
   }
 
   if (espNowFloodAlreadyQueued(packet)) return true;
@@ -740,7 +1560,7 @@ bool receiveESPNowFloodPacket(const uint8_t* data, uint8_t len, bool broadcast) 
 
 // Extracts the remote app's supported JSON fields and originates one semantic flood command.
 bool sendESPNowFloodCommand(JsonObject root) {
-  if (!espNowFloodInitialized || !enableESPNow || !useESPNowSync || statusESPNow != ESP_NOW_STATE_ON || !syncGroups) return false;
+  if (!espNowFloodInitialized || !enableESPNow || !useESPNowSync || statusESPNow != ESP_NOW_STATE_ON) return false;
 
   EspNowFloodCommand command = {};
   if (!root[F("ps")].isNull()) {
@@ -762,20 +1582,48 @@ bool sendESPNowFloodCommand(JsonObject root) {
     command.flags |= ESP_NOW_FLOOD_COMMAND_BRIGHTNESS;
     command.brightness = brightness;
   }
+  if (!root[F("esptrim")].isNull()) {
+    if (!root[F("esptrim")].is<int>()) return false;
+    const int trim = root[F("esptrim")].as<int>();
+    if (trim < ESP_NOW_FLOOD_TRIM_MIN || trim > ESP_NOW_FLOOD_TRIM_MAX) return false;
+    command.flags |= ESP_NOW_FLOOD_COMMAND_TRIM;
+    command.trim = trim;
+  }
+  if (!root[F("espr")].isNull()) {
+    if (!root[F("espr")].is<unsigned long>()) return false;
+    command.requestId = root[F("espr")].as<unsigned long>();
+    if (!command.requestId) return false;
+  }
   if (!command.flags) return false;
 
   const bool masterExpired = !espNowFloodTimeMaster && millis() - espNowFloodLastClockSeen > ESP_NOW_FLOOD_MASTER_TIMEOUT_MS;
   if (!espNowFloodClockValid || masterExpired) espNowFloodBecomeTimeMaster();
   EspNowFloodPacket packet = espNowFloodCreatePacket(ESP_NOW_FLOOD_TYPE_COMMAND, sizeof(command));
+  if (!root[F("espd")].isNull() && !root[F("espg")].isNull()) return false;
+  if (!root[F("espd")].isNull()) {
+    if (!root[F("espd")].is<const char*>() || !espNowFloodParseOrigin(root[F("espd")].as<const char*>(), packet.destination)) return false;
+    packet.destinationType = ESP_NOW_FLOOD_DESTINATION_NODE;
+  } else if (!root[F("espg")].isNull()) {
+    if (!root[F("espg")].is<int>()) return false;
+    const int groups = root[F("espg")].as<int>();
+    if (groups < 1 || groups > 255) return false;
+    packet.destinationType = ESP_NOW_FLOOD_DESTINATION_GROUP;
+    packet.destinationGroups = groups;
+  }
+  // Fleet and group traffic is real-time, best-effort control. Only an individually addressed
+  // command needs an end-to-end receipt, so legacy clients cannot create ACK storms at scale.
+  if (packet.destinationType != ESP_NOW_FLOOD_DESTINATION_NODE) command.requestId = 0;
+  command.stateRevision = ++espNowFloodStateRevision;
+  if (!command.stateRevision) command.stateRevision = ++espNowFloodStateRevision;
   packet.effectEpoch = espNowFloodNetworkMillis();
   memcpy(packet.payload, &command, sizeof(command));
-  if (!espNowFloodQueueIngress(packet, sizeof(packet), true)) return false;
+  if (!espNowFloodQueueIngress(packet, ESP_NOW_FLOOD_HEADER_SIZE + sizeof(command), true)) return false;
   return true;
 }
 
 // Promotes a controller with direct wall time and schedules a fresh beacon immediately.
 void useESPNowFloodLocalTimeSource() {
-  if (!espNowFloodInitialized || !enableESPNow || !useESPNowSync || statusESPNow != ESP_NOW_STATE_ON || !syncGroups || toki.getTimeSource() == TOKI_TS_NONE) return;
+  if (!espNowFloodInitialized || !enableESPNow || !useESPNowSync || statusESPNow != ESP_NOW_STATE_ON || toki.getTimeSource() == TOKI_TS_NONE) return;
   espNowFloodBecomeTimeMaster();
   espNowFloodMasterStratum = espNowFloodLocalWallStratum();
   for (EspNowFloodTx& slot : espNowFloodTx) {
@@ -789,16 +1637,34 @@ void applyESPNowFloodTimebase(uint8_t presetId) {
   if (!espNowFloodPendingUntil) return;
   if (int32_t(millis() - espNowFloodPendingUntil) >= 0) {
     espNowFloodPendingUntil = 0;
+    espNowFloodPendingPresetScope = ESP_NOW_FLOOD_DESTINATION_NODE;
     return;
   }
   if (presetId != espNowFloodPendingPreset) {
-    if (presetId == 0) espNowFloodPendingUntil = 0;
+    if (presetId == 0) {
+      espNowFloodPendingUntil = 0;
+      espNowFloodPendingPresetScope = ESP_NOW_FLOOD_DESTINATION_NODE;
+    }
     return;
   }
 
+  // Presets may alter power and brightness internally. Retain their actual outcome at the
+  // preset revision so a later replay reproduces the state seen by nodes that never rebooted.
+  if (presetId && (espNowFloodPendingPresetScope == ESP_NOW_FLOOD_DESTINATION_ALL || espNowFloodPendingPresetScope == ESP_NOW_FLOOD_DESTINATION_GROUP)) {
+    for (uint8_t groupBit = 1; groupBit; groupBit <<= 1U) {
+      if (espNowFloodPendingPresetScope == ESP_NOW_FLOOD_DESTINATION_GROUP && !(espNowFloodPendingPresetGroups & groupBit)) continue;
+      const uint8_t scopeGroup = espNowFloodPendingPresetScope == ESP_NOW_FLOOD_DESTINATION_GROUP ? groupBit : 0;
+      espNowFloodStoreRetainedField(espNowFloodPendingPresetScope, scopeGroup, ESP_NOW_FLOOD_COMMAND_BRIGHTNESS, briLast, espNowFloodPendingPresetVersion);
+      espNowFloodStoreRetainedField(espNowFloodPendingPresetScope, scopeGroup, ESP_NOW_FLOOD_COMMAND_POWER, bri > 0, espNowFloodPendingPresetVersion);
+      if (espNowFloodPendingPresetScope == ESP_NOW_FLOOD_DESTINATION_ALL) break;
+    }
+  }
   espNowFloodAlignEffectEpoch(espNowFloodPendingEpoch);
   espNowFloodPendingUntil = 0;
   espNowFloodPendingPreset = 0;
+  espNowFloodPendingPresetScope = ESP_NOW_FLOOD_DESTINATION_NODE;
+  espNowFloodPendingPresetGroups = 0;
+  espNowFloodPendingPresetVersion = {};
 }
 
 // Runs flood receive, clock-beacon, relay, and retry work from WLED's main loop.
@@ -807,8 +1673,12 @@ void handleESPNowFlood() {
   EspNowFloodIngress ingress;
   for (uint8_t count = 0; count < ESP_NOW_FLOOD_RX_QUEUE_SIZE && espNowFloodTakeIngress(ingress); count++) espNowFloodProcessIngress(ingress);
   espNowFloodServiceApply();
+  espNowFloodExpireStatus();
+  espNowFloodServiceStateResponses();
   espNowFloodElectIfOrphaned();
   espNowFloodSendTimeIfDue();
+  espNowFloodSendAnnouncementIfDue();
+  espNowFloodSendStateRequestIfDue();
   espNowFloodServiceTx();
 }
 

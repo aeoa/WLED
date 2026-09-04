@@ -517,6 +517,7 @@ bool deserializeConfig(JsonObject doc, bool fromFS) {
 
   JsonObject light = doc[F("light")];
   CJSON(briMultiplier, light[F("scale-bri")]);
+  briMultiplier = constrain(briMultiplier, 1U, 400U);
   CJSON(paletteBlend, light[F("pal-mode")]);
   CJSON(strip.autoSegments, light[F("aseg")]);
   setRestorePresetBri(light[F("restore-bri")] | restorePresetBri);

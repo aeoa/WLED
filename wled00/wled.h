@@ -420,7 +420,7 @@ WLED_GLOBAL byte nightlightTargetBri _INIT(0);      // brightness after nightlig
 WLED_GLOBAL byte nightlightDelayMins _INIT(60);
 WLED_GLOBAL byte nightlightMode      _INIT(NL_MODE_FADE); // See const.h for available modes. Was nightlightFade
 
-WLED_GLOBAL byte briMultiplier _INIT(100);          // % of brightness to set (to limit power, if you set it to 50 and set bri to 255, actual brightness will be 127)
+WLED_GLOBAL uint16_t briMultiplier _INIT(100);      // persistent output trim in percent; automatic current limiting still applies afterwards
 
 // User Interface CONFIG
 #ifndef SERVERNAME
@@ -593,6 +593,9 @@ WLED_GLOBAL uint16_t userVar0 _INIT(0), userVar1 _INIT(0); //available for use i
 WLED_GLOBAL bool apActive _INIT(false);
 WLED_GLOBAL byte apClients _INIT(0);
 WLED_GLOBAL bool forceReconnect _INIT(false);
+#ifndef WLED_DISABLE_ESPNOW
+WLED_GLOBAL bool espNowUseAPInterface _INIT(false);
+#endif
 WLED_GLOBAL unsigned long lastReconnectAttempt _INIT(0);
 WLED_GLOBAL bool interfacesInited _INIT(false);
 WLED_GLOBAL bool wasConnected _INIT(false);

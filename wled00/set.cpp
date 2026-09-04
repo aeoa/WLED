@@ -400,7 +400,7 @@ void handleSettingsSet(AsyncWebServerRequest *request, byte subPage)
     t = request->arg(F("PB")).toInt();
     if (t >= 0 && t < 4) paletteBlend = t;
     t = request->arg(F("BF")).toInt();
-    if (t > 0) briMultiplier = t;
+    if (t > 0 && t <= 400) briMultiplier = t;
 
     doInitBusses = busesChanged;
   }
